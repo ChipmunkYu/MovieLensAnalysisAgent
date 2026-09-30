@@ -1,0 +1,14 @@
+{
+  "task_id": "ml1m-86cefeebedca4f9da75c91d52c5caed1",
+  "status": "failed",
+  "failed_stage": "hadoop_preflight",
+  "error": "Hadoop command not found: hadoop",
+  "dataset_version": "ml1m-7ece60483ee9e64b",
+  "rule_version": "ml1m-cleaning-v1.0",
+  "scoring_version": "ml1m-quality-v1.0",
+  "T1": null,
+  "T2": null,
+  "quality": null,
+  "data_volume": null,
+  "disposition": null
+}
