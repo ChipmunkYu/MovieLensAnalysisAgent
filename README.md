@@ -4,14 +4,14 @@
 
 ### 1. 启动简易前端
 
-在项目根目录 `e:\homework\BDA\1` 执行：
+在项目根目录执行：
 
-```powershell
-C:\Users\KK\AppData\Local\Programs\Python\Python312\python.exe `
-  -m movielens_quality.web_app `
-  --input-dir "e:\homework\BDA\1\ml-1m\ml-1m" `
-  --output-root "e:\homework\BDA\1\web_outputs" `
-  --registry "e:\homework\BDA\1\web_task_registry.json" `
+```bash
+python3 \
+  -m movielens_quality.web_app \
+  --input-dir "ml-1m/ml-1m" \
+  --output-root "web_outputs" \
+  --registry "web_task_registry.json" \
   --port 8000
 ```
 
@@ -25,27 +25,27 @@ http://127.0.0.1:8000
 
 ### 2. 运行单元测试
 
-```powershell
-C:\Users\KK\AppData\Local\Programs\Python\Python312\python.exe `
+```bash
+python3 \
   -m unittest discover -s tests -v
 ```
 
 ### 3. 直接运行数据检查
 
-```powershell
-C:\Users\KK\AppData\Local\Programs\Python\Python312\python.exe `
-  -m movielens_quality.quality_check `
-  --input-dir "e:\homework\BDA\1\ml-1m\ml-1m" `
-  --output-dir "e:\homework\BDA\1\quality_report"
+```bash
+python3 \
+  -m movielens_quality.quality_check \
+  --input-dir "ml-1m/ml-1m" \
+  --output-dir "quality_report"
 ```
 
 ### 4. 直接运行 Hadoop 流程
 
-```powershell
-C:\Users\KK\AppData\Local\Programs\Python\Python312\python.exe `
-  -m movielens_quality.hadoop_pipeline `
-  --input-dir "e:\homework\BDA\1\ml-1m\ml-1m" `
-  --output-dir "e:\homework\BDA\1\hadoop_quality_report"
+```bash
+python3 \
+  -m movielens_quality.hadoop_pipeline \
+  --input-dir "ml-1m/ml-1m" \
+  --output-dir "hadoop_quality_report"
 ```
 
 该命令只有在 Hadoop 已安装、环境变量已配置、且三个 Hadoop 阶段命令已登记后，才会生成成功报告。
@@ -71,7 +71,7 @@ C:\Users\KK\AppData\Local\Programs\Python\Python312\python.exe `
 ## 目录结构
 
 ```text
-e:\homework\BDA\1\
+project-root/
 ├─ README.md
 ├─ 引言_项目总体要求与汇报安排.md
 ├─ 迭代一_Hadoop数据清洗与Agent基础.md
