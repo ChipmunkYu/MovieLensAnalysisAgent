@@ -18,9 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .quality_check import MAX_TIMESTAMP, UP_TO_DATE_WINDOW_DAYS, UP_TO_DATE_WINDOW_START
+
 DIMENSIONS = ("Accurate", "Complete", "Unique", "Up-to-date", "Consistent")
 RULE_VERSION = "ml1m-cleaning-v1.0"
-SCORING_VERSION = "ml1m-quality-v1.0"
+SCORING_VERSION = "ml1m-quality-v1.2"
 
 
 @dataclass(frozen=True)
@@ -51,23 +53,63 @@ def _score(numerator: int, denominator: int) -> float:
     return round(100.0 * numerator / denominator, 6) if denominator else 0.0
 
 
-def score_quality(statistics: dict[str, int]) -> dict[str, float]:
+def score_quality(statistics: dict[str, int]) -> dict[str, float | None]:
     """Apply the same fixed formulas to pre- and post-cleaning statistics.
 
-    Required fields are counts over the same declared data scope:
-    ``total_records``, ``accurate_records``, ``complete_records``,
-    ``duplicate_records``, ``up_to_date_records`` and
-    ``consistent_records``.
+    Accurate uses ``accurate_fields_passed`` and ``accurate_fields_checked``;
+    other dimensions retain their existing record-level formulas.
     """
 
+    if any(value < 0 for value in statistics.values()):
+        raise ValueError("quality statistics cannot be negative")
     total = statistics["total_records"]
+    eligible = statistics["eligible_records"]
+    exact = statistics["exact_duplicate_records"]
+    conflict = statistics["conflict_records"]
+    if exact + conflict > eligible:
+        raise ValueError("exact_duplicate_records + conflict_records exceeds eligible_records")
     return {
-        "Accurate": _score(statistics["accurate_records"], total),
+        "Accurate": _score(
+            statistics["accurate_fields_passed"], statistics["accurate_fields_checked"]
+        ),
         "Complete": _score(statistics["complete_records"], total),
-        "Unique": _score(max(total - statistics["duplicate_records"], 0), total),
-        "Up-to-date": _score(statistics["up_to_date_records"], total),
+        "Unique": _score(eligible - exact - conflict, eligible) if eligible else None,
+        "Up-to-date": _score(statistics["up_to_date_records"], total)
+        if "up_to_date_records" in statistics
+        else None,
         "Consistent": _score(statistics["consistent_records"], total),
     }
+
+
+def score_quality_by_table(
+    statistics_by_table: dict[str, dict[str, int]],
+) -> dict[str, dict[str, float | None] | dict[str, dict[str, float | None]]]:
+    """Score each table, then macro-average non-N/A dimensions across non-empty tables."""
+
+    per_table = {}
+    for table, statistics in statistics_by_table.items():
+        per_table[table] = score_quality(statistics)
+        if table not in {"ratings", "ratings.dat"}:
+            per_table[table]["Up-to-date"] = None
+    non_empty = [per_table[table] for table, statistics in statistics_by_table.items() if statistics["total_records"] > 0]
+    dataset: dict[str, float | None] = {}
+    for dimension in DIMENSIONS:
+        applicable = [score[dimension] for score in non_empty if score[dimension] is not None]
+        dataset[dimension] = round(sum(applicable) / len(applicable), 6) if applicable else None
+    return {"dataset": dataset, "per_table": per_table}
+
+
+def _score_statistics(
+    statistics: dict[str, Any],
+) -> tuple[dict[str, float | None], dict[str, dict[str, float | None]] | None]:
+    if "total_records" in statistics:
+        return score_quality(statistics), None
+    scores = score_quality_by_table(statistics)
+    return scores["dataset"], scores["per_table"]
+
+
+def _score_delta(before: float | None, after: float | None) -> float | None:
+    return round(after - before, 6) if before is not None and after is not None else None
 
 
 def _failure(
@@ -165,7 +207,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
     try:
         pre = _read_json(config.output_dir / "pre_quality.json", "pre-cleaning")
         pre_stats = pre["statistics"]
-        pre_score = score_quality(pre_stats)
+        pre_score, pre_table_scores = _score_statistics(pre_stats)
     except (KeyError, TypeError, ValueError, OSError) as exc:
         report = _failure(task_id, dataset_version, config.rule_version, config.scoring_version, "pre_cleaning_quality", str(exc))
         _write_report(config.output_dir, report)
@@ -185,7 +227,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
     try:
         post = _read_json(config.output_dir / "post_quality.json", "post-cleaning")
         post_stats = post["statistics"]
-        post_score = score_quality(post_stats)
+        post_score, post_table_scores = _score_statistics(post_stats)
         t1, t2 = post["T1"], post["T2"]
         disposition = post["disposition"]
         data_volume = post["data_volume"]
@@ -193,6 +235,26 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
         report = _failure(task_id, dataset_version, config.rule_version, config.scoring_version, "post_cleaning_quality", str(exc))
         _write_report(config.output_dir, report)
         return report
+
+    quality = {
+        "formula": "Unique = 100 * (eligible - exact duplicates - conflicts) / eligible; Accurate uses passed/checked fields; Up-to-date is ratings timestamps in the inclusive fixed 90-day window / total physical ratings records; other dimensions retain their formulas",
+        "dimensions": list(DIMENSIONS),
+        "up_to_date_rule": {
+            "applicable_tables": ["ratings.dat"],
+            "reference_timestamp": MAX_TIMESTAMP,
+            "window_days": UP_TO_DATE_WINDOW_DAYS,
+            "window_start_timestamp": UP_TO_DATE_WINDOW_START,
+        },
+        "pre": pre_score,
+        "post": post_score,
+        "delta": {key: _score_delta(pre_score[key], post_score[key]) for key in DIMENSIONS},
+    }
+    if pre_table_scores is not None or post_table_scores is not None:
+        quality["per_table"] = {
+            stage: scores
+            for stage, scores in (("pre", pre_table_scores), ("post", post_table_scores))
+            if scores is not None
+        }
 
     report = {
         "task_id": task_id,
@@ -203,13 +265,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
         "scoring_version": config.scoring_version,
         "T1": t1,
         "T2": t2,
-        "quality": {
-            "formula": "dimension_score = 100 * numerator / total_records",
-            "dimensions": list(DIMENSIONS),
-            "pre": pre_score,
-            "post": post_score,
-            "delta": {key: round(post_score[key] - pre_score[key], 6) for key in DIMENSIONS},
-        },
+        "quality": quality,
         "data_volume": data_volume,
         "disposition": disposition,
         "artifacts": {

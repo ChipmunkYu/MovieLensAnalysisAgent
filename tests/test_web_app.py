@@ -5,10 +5,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from movielens_quality.agent_tools import parse_natural_language_request
-from movielens_quality.web_app import TaskStore
+from movielens_quality.web_app import HTML, TaskStore
 
 
 class WebAppTests(unittest.TestCase):
+    def test_quality_table_handles_not_applicable_scores(self):
+        self.assertIn("function score(v){return v==null?'N/A':esc(v);}", HTML)
+        self.assertIn("时效性仅 ratings 按固定观测截止点前 90 天窗口评价，users/movies 不适用", HTML)
+
     def test_submit_and_poll_exposes_real_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

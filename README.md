@@ -148,20 +148,31 @@ Hadoop 不可用、阶段命令缺失、作业失败或结果文件缺失时，�
 清洗前后使用同一套公式：
 
 ```text
-Accurate   = 100 × accurate_records / total_records
+Accurate   = 100 × accurate_fields_passed / accurate_fields_checked
 Complete   = 100 × complete_records / total_records
-Unique     = 100 × (total_records - duplicate_records) / total_records
-Up-to-date = 100 × up_to_date_records / total_records
+Unique     = 100 × (eligible_records - exact_duplicate_records - conflict_records) / eligible_records
+Up-to-date（仅 ratings）= 100 × up_to_date_records / total_records
 Consistent = 100 × consistent_records / total_records
 ```
+
+Accurate 按存在且应检查的字段逐项计数：ratings 检查正整数 ID、1–5 整数评分及 `[946684800, 1046476799]` 内的 Unix 秒时间戳；users 检查 ID、Gender、Age、Occupation 的官方编码；movies 检查 ID、官方 18 类 Genres，并仅在 Title 存在末尾括号年份候选时检查 4 位年份及 `1888..2003` 范围。毫秒时间戳判失败但不修复。
+
+Unique v1.1 中，`eligible_records` 是成功解析且身份键完整的记录；users、movies、ratings 的身份键分别为 `UserID`、`MovieID`、`(UserID, MovieID, Timestamp)`。同键整组内容完全相同时保留首条、其余计入 `exact_duplicate_records`；同键存在不同完整内容时，整组所有行计入 `conflict_records`，且该组不再计 exact。`duplicate_records` 仅作为兼容字段，等于两者之和。`eligible_records=0` 时 Unique 为 N/A。冲突会影响 Consistent 的统计生产规则，评分器不会在 Consistent 中再次扣除冲突。
+
+Up-to-date 使用固定 reference `1046476799`，90 天窗口起点为 `1038700799`，按 `1038700799 <= timestamp <= 1046476799`（两端 inclusive）计数。分母始终是 ratings 的物理记录总数；只要时间戳是该窗口内的合法 Unix 秒，即使同一 rating 的其他字段失败，也计入 `up_to_date_records`。users 和 movies 不适用，表级和数据集无适用表时均为 `N/A`（JSON `null`）。数据集级 Up-to-date 仅平均适用且非空的表；其他维度继续对非空表宏平均。清洗前后的 Hadoop 统计产物必须提供 `ratings.up_to_date_records`，并使用相同固定 reference 和窗口。
+
+Consistent 按物理记录计数：三个文件均要求统一结构和字段类型；同一 UserID、MovieID 不能对应冲突内容；Genres 必须使用官方词表且同一电影内不得重复；rating 必须使用秒级时间戳、引用已存在的用户和电影，并且同一 `(UserID, MovieID, Timestamp)` 不能对应不同评分。完全相同的重复记录只影响 Unique，不影响 Consistent；冲突键涉及的全部记录均判为不一致。
+
+其中，`total_records` 是**单表范围内进入该次评分的物理记录行数**。`ratings`、`users`、`movies` 分别使用各自的 `total_records` 计算适用维度分数；数据集级的每个维度只对有记录且该维度适用的表做等权算术平均（宏平均），空表不参与。数据集级评分不会把三表记录合并后用总行数计算微平均，因此记录量较大的 `ratings` 不会淹没其他表的质量表现。没有适用且非空表的维度为 `N/A`（JSON `null`）。
 
 评分结果必须由 Hadoop 阶段生成的统计结果计算。Hadoop 未成功执行时不返回成功评分。
 
 评分局限包括：
 
+- 当前各维度分子的完整业务规则仍有未实现项，现有公式和统计字段不代表五维质量评分已完整实现；
 - 格式和业务约束通过不等于现实世界事实真实；
 - 用户人口属性来自数据集填写信息，不能仅凭格式证明准确；
-- MovieLens 1M 是历史数据，时效性只能按登记时间范围评价；
+- MovieLens 1M 是历史数据，时效性仅表示评分时间戳是否落在上述固定历史 reference 前 90 天，不表示数据在当前日期仍然新鲜；
 - 删除或隔离记录可能改善主数据集统计值，但不等于问题被事实修复。
 
 ## 数据处置类型
@@ -181,7 +192,7 @@ Consistent = 100 × consistent_records / total_records
 
 ```text
 清洗规则版本：ml1m-cleaning-v1.0
-评分配置版本：ml1m-quality-v1.0
+评分配置版本：ml1m-quality-v1.2
 ```
 
 任务报告应包含：

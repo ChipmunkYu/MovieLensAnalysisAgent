@@ -34,16 +34,17 @@ pre{white-space:pre-wrap;overflow:auto;background:#111827;color:#e5e7eb;padding:
 const $=id=>document.getElementById(id);
 let currentTask=null, timer=null;
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function score(v){return v==null?'N/A':esc(v);}
 function showStatus(data){$("status").innerHTML=`任务 ${esc(data.task_id||'')}：<b>${esc(data.status)}</b>`+
  (data.failed_stage?`，阶段：${esc(data.failed_stage)}`:'')+
  (data.error?`<span class="error">，${esc(data.error)}</span>`:'');}
 function render(report){
  if(report.status!=="SUCCESS"){ $("result").innerHTML=`<section class="error"><h2>任务失败</h2><p>失败阶段：${esc(report.failed_stage)}</p><p>${esc(report.error)}</p><p>日志：${esc(report.log_path)}</p></section>`; return; }
  const q=report.quality||{}, pre=q.pre||{}, post=q.post||{}, delta=q.delta||{};
- let rows=(q.dimensions||Object.keys(pre)).map(k=>`<tr><td>${esc(k)}</td><td>${esc(pre[k])}</td><td>${esc(post[k])}</td><td>${esc(delta[k])}</td></tr>`).join('');
+ let rows=(q.dimensions||Object.keys(pre)).map(k=>`<tr><td>${esc(k)}</td><td>${score(pre[k])}</td><td>${score(post[k])}</td><td>${score(delta[k])}</td></tr>`).join('');
  const v=report.data_volume||{}, d=report.disposition||{};
  $("result").innerHTML=`<section><h2>质量评分</h2><table><tr><th>维度</th><th>清洗前</th><th>清洗后</th><th>变化</th></tr>${rows}</table>
- <p>依据：${esc(q.formula||'实际 Hadoop 报告未提供')}</p><p>局限：格式和约束检查不能证明用户属性的现实真实性；历史数据的时效性按登记时间范围评价。</p></section>
+ <p>依据：${esc(q.formula||'实际 Hadoop 报告未提供')}</p><p>局限：格式和约束检查不能证明用户属性的现实真实性；时效性仅 ratings 按固定观测截止点前 90 天窗口评价，users/movies 不适用。</p></section>
  <section><h2>数据处置</h2><div class="grid">
  <div class="card">原始/清洗后<br>${esc(v.input_records)} / ${esc(v.cleaned_records)}</div>
  <div class="card">修复<br>${esc(d.repaired)}</div><div class="card">去重<br>${esc(d.deduplicated)}</div>
