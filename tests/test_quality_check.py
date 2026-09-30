@@ -12,7 +12,8 @@ class QualityCheckTests(unittest.TestCase):
             "1::F::25::1::00123\n2::M::35::20::90210\n", encoding="iso-8859-1"
         )
         (directory / "movies.dat").write_text(
-            "10::Caf\xe9 (2000)::Drama\n20::Other (2001)::Comedy\n",
+            "10::Caf\xe9 (2000)::Drama\n20::Other (2001)::Comedy\n"
+            "30::Broken (2002)::Action||Comedy\n40::Also Broken (2003)::Comedy|\n",
             encoding="iso-8859-1",
         )
         (directory / "ratings.dat").write_text(
@@ -33,6 +34,10 @@ class QualityCheckTests(unittest.TestCase):
             self.assertEqual(report["delimiter"], "::")
             self.assertFalse(report["header_skipped"])
             self.assertEqual(report["files"]["users.dat"]["total_records"], 2)
+            self.assertEqual(report["files"]["ratings.dat"]["complete_records"], 4)
+            self.assertEqual(report["files"]["ratings.dat"]["type_range_valid_records"], 2)
+            self.assertEqual(report["files"]["ratings.dat"]["valid_records"], 1)
+            self.assertEqual(report["files"]["movies.dat"]["complete_records"], 2)
             self.assertEqual(report["cross_table"]["missing_movie_references"], 2)
             reasons = {item["reason"] for item in report["anomalies"]}
             self.assertIn("duplicate_key", reasons)

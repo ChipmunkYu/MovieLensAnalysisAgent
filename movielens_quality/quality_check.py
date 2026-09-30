@@ -102,8 +102,15 @@ def inspect_dataset(
 
             if len(fields) != expected_fields:
                 reasons.append("field_count")
-            if any(not field.strip() for field in fields):
+            has_empty_field = any(not field.strip() for field in fields)
+            if file_name == "movies.dat" and len(fields) == expected_fields:
+                has_empty_field = has_empty_field or any(
+                    not genre.strip() for genre in fields[2].split("|")
+                )
+            if has_empty_field:
                 reasons.append("empty_field")
+            if len(fields) == expected_fields and not has_empty_field:
+                file_stats["complete_records"] += 1
 
             parsed: tuple[Any, ...] | None = None
             if file_name == "ratings.dat" and len(fields) == 4:
@@ -155,7 +162,6 @@ def inspect_dataset(
                 file_stats["anomaly_records"] += 1
                 continue
 
-            file_stats["complete_records"] += 1
             file_stats["type_range_valid_records"] += 1
             if file_name == "users.dat":
                 assert parsed is not None
@@ -209,7 +215,7 @@ def inspect_dataset(
     for file_name, file_stats in stats.items():
         file_stats["anomaly_counts"] = dict(sorted(anomaly_counts[file_name].items()))
         file_stats["valid_records"] = (
-            file_stats["complete_records"] - file_stats["duplicate_records"]
+            file_stats["type_range_valid_records"] - file_stats["duplicate_records"]
         )
 
     report: dict[str, Any] = {
