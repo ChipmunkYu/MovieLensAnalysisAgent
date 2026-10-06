@@ -1,8 +1,0 @@
-/AGENTS.md
-/__MACOSX/
-/ml-1m/
-/引言_项目总体要求与汇报安排.md
-/迭代一_Hadoop数据清洗与Agent基础.md
-/.venv/
-__pycache__/
-*.py[cod]
