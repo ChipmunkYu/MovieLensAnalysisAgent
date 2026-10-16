@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "name": "MovieLens 默认清洗规则",
+  "rules": [
+    {"id": "format", "name": "格式与完整性校验", "description": "按 :: 分隔并要求四个字段完整", "enabled": true},
+    {"id": "range", "name": "标识与评分校验", "description": "ID 为正数且评分位于 1 至 5", "enabled": true},
+    {"id": "deduplicate", "name": "评分去重", "description": "同一用户与电影保留最新时间戳记录", "enabled": true},
+    {"id": "quality", "name": "五维质量评分", "description": "基于实际记录计算准确、完整、唯一、时效和一致性", "enabled": true}
+  ],
+  "format": {
+    "delimiter": "::",
+    "columns": ["user_id", "movie_id", "rating", "timestamp"]
+  },
+  "validation": {
+    "rating_min": 1.0,
+    "rating_max": 5.0,
+    "positive_ids": true,
+    "non_negative_timestamp": true
+  },
+  "duplicates": {
+    "key": ["user_id", "movie_id"],
+    "strategy": "keep_latest"
+  },
+  "scoring": {
+    "dimension_scale": 100,
+    "timely_timestamp_min": 0
+  }
+}

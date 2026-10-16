@@ -1,1 +1,12 @@
 /local
+/.venv
+/.env
+/.pytest_cache
+/movie_tasks.db
+/data/artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/*.tsbuildinfo
