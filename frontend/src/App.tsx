@@ -10,7 +10,7 @@ const DIMENSIONS: Record<string, [string, string]> = {
   timeliness: ['时效性', 'Up-to-date'], consistent: ['一致性', 'Consistent'], consistency: ['一致性', 'Consistent'],
 }
 type IconName = 'send' | 'file' | 'folder' | 'chart' | 'chevron' | 'panel' | 'close' | 'spark' | 'alert' | 'report' | 'rule'
-type Selection = { type: 'scores' } | { type: 'report' } | { type: 'rule'; rule: Rule }
+type Selection = { type: 'scores' } | { type: 'report' } | { type: 'method' } | { type: 'rule'; rule: Rule }
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -184,6 +184,7 @@ export default function App() {
             {artifacts.length > 0 && <><TreeFolder label="结果文件" node="files" level={2} open={expanded.has('files')} onToggle={toggle} />{expanded.has('files') && artifacts.map((artifact, index) => { const href = artifact.download_url ?? artifact.url; return <a className="tree-row tree-link" role="treeitem" aria-level={3} style={{ '--level': 3 } as React.CSSProperties} key={artifact.id ?? `${artifact.name}-${index}`} href={href ? api.resolveUrl(href) : undefined} target={href ? '_blank' : undefined} rel="noreferrer" aria-disabled={!href} title={artifact.name}><span className="tree-spacer" /><Icon name="file" /><span className="tree-name">{artifact.name}</span></a> })}</>}
             {hasReportResources && <><TreeFolder label="规则与报告" node="rules" level={2} open={expanded.has('rules')} onToggle={toggle} />{expanded.has('rules') && <div role="group">
               {(result.explanation || dispositions.length > 0) && <TreeItem label="处置摘要与结果说明" icon="report" level={3} active={selection?.type === 'report'} onClick={() => select({ type: 'report' })} />}
+              {(result.method || result.limitations?.length) && <TreeItem label="评分方法与局限" icon="report" level={3} active={selection?.type === 'method'} onClick={() => select({ type: 'method' })} />}
               {rules?.rules?.map((rule, index) => <TreeItem key={rule.id ?? `${rule.name}-${index}`} label={rule.name} icon="rule" level={3} active={selection?.type === 'rule' && selection.rule === rule} onClick={() => select({ type: 'rule', rule })} />)}
             </div>}</>}
           </div>}
@@ -204,6 +205,12 @@ function TreeItem({ label, icon, level, active, onClick }: { label: string; icon
 function ResourceDetail({ selection, scores, result, dispositions, rules }: { selection: Selection; scores: DimensionScore[]; result: TaskResult; dispositions: DispositionItem[]; rules?: RuleSet }) {
   if (selection.type === 'scores') return <section className="resource-detail" aria-label="清洗前后五维对比详情"><DetailHead eyebrow="CHART" title="清洗前后五维对比" /><div className="score-legend"><span>清洗前</span><b>清洗后</b></div>{scores.map(score => { const before = clampScore(score.before), after = clampScore(score.after); const names = DIMENSIONS[score.dimension.toLowerCase()] ?? [score.dimension, 'Quality']; return <div className="score-detail" key={score.dimension}><div><b>{names[0]}</b><span>{before.toFixed(1)} → <strong>{after.toFixed(1)}</strong></span></div><div className="bar-compare" title={`清洗前 ${before.toFixed(1)}，清洗后 ${after.toFixed(1)}`}><i style={{ width: `${Math.min(100, before)}%` }} /><b style={{ width: `${Math.min(100, after)}%` }} /></div>{score.note && <small>{score.note}</small>}</div> })}</section>
   if (selection.type === 'rule') return <section className="resource-detail" aria-label={`${selection.rule.name}规则详情`}><DetailHead eyebrow="RULE" title={selection.rule.name} /><p>{selection.rule.description ?? selection.rule.action ?? '接口未提供规则说明。'}</p><div className="meta-pills"><span>{selection.rule.enabled === false ? '已停用' : '已启用'}</span>{rules?.version && <span>版本 {rules.version}</span>}</div></section>
+  if (selection.type === 'method') return <section className="resource-detail" aria-label="评分方法与局限"><DetailHead eyebrow="METHOD" title="评分方法与局限" />
+    {result.method && <ul>{Object.entries(result.method).map(([dimension, text]) => { const names = DIMENSIONS[dimension] ?? [dimension, dimension]; return <li key={dimension}><span><b>{names[0]} <small>{names[1]}</small></b>{text}</span></li> })}</ul>}
+    {result.limitations?.length ? <><h4>适用范围与局限</h4><ul className="issues">{result.limitations.map(item => <li key={item}>{item}</li>)}</ul></> : null}
+    {result.unverified?.length ? <><h4>无法验证</h4><ul className="issues">{result.unverified.map(item => <li key={item}>{item}</li>)}</ul></> : null}
+    <div className="meta-pills"><span>规则版本 {result.rule_version ?? rules?.version ?? '未提供'}</span><span>数据版本 {result.data_version ?? '未提供'}</span><span>输出 {result.output_data_version ?? '未提供'}</span><span>T1 {result.t1 ?? '未设置'}</span><span>T2 {result.t2 ?? '未设置'}</span></div>
+  </section>
   return <section className="resource-detail" aria-label="处置摘要与结果说明"><DetailHead eyebrow="REPORT" title="处置摘要与结果说明" /><div className="record-change"><span>处理前 <b>{formatCount(result.rows_before)}</b></span><Icon name="chevron" /><span>处理后 <b>{formatCount(result.rows_after)}</b></span></div>{dispositions.length > 0 && <ul>{dispositions.map((item, index) => <li key={`${item.label}-${index}`}><span><b>{item.label}</b>{item.reason && <small>{item.reason}</small>}</span><strong>{formatCount(item.count)}</strong></li>)}</ul>}<p>{result.explanation ?? '本次任务未附加结果说明。'}</p>{result.unresolved_issues?.length ? <><h4>仍需关注</h4><ul className="issues">{result.unresolved_issues.map(issue => <li key={issue}>{issue}</li>)}</ul></> : null}</section>
 }
 function DetailHead({ eyebrow, title }: { eyebrow: string; title: string }) { return <header><span>{eyebrow}</span><h3>{title}</h3></header> }

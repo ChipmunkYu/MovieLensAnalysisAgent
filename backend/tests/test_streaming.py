@@ -11,16 +11,25 @@ from backend.executors import run_local
 
 ROOT = Path(__file__).resolve().parents[2]
 STREAMING = ROOT / "hadoop" / "streaming"
-SCRIPT_NAMES = ("score_mapper.py", "score_reducer.py", "clean_mapper.py", "clean_reducer.py")
+SCRIPT_NAMES = (
+    "score_mapper.py",
+    "score_reducer.py",
+    "clean_mapper.py",
+    "clean_reducer.py",
+    "quarantine_mapper.py",
+    "quarantine_reducer.py",
+)
 RULES = json.loads((ROOT / "rules" / "default.json").read_text(encoding="utf-8"))
 
 SAMPLE = (
-    "1::10::4::100\n"
-    "1::10::5::200\n"
-    "2::20::9::300\n"
+    "1::10::4::946684800\n"
+    "1::10::5::946771200\n"
+    "2::20::9::946857600\n"
     "bad row\n"
-    "3::30::3::400\n"
-    "5::50::0::600\n"
+    "3::30::3::978307200\n"
+    "4::40::4.0::1009843200\n"
+    "5::50::0::1041379200\n"
+    "6::60::5::100\n"
 )
 
 
@@ -45,8 +54,8 @@ def run_script(directory: Path, name: str, payload: bytes) -> bytes:
 
 def shuffle(payload: bytes) -> bytes:
     """Emulate the Hadoop shuffle: group and sort by key (the text before the tab)."""
-    lines = payload.decode("ascii").splitlines()
-    return ("\n".join(sorted(lines)) + "\n").encode("ascii")
+    lines = payload.decode("latin-1").splitlines()
+    return ("\n".join(sorted(lines)) + "\n").encode("latin-1")
 
 
 def in_process_metrics() -> dict:
@@ -64,15 +73,17 @@ def test_score_pipe_matches_in_process_scoring(tmp_path: Path):
     (output / "part-00000").write_bytes(reduced)
 
     counts = hadoop_runner._read_counts(output)
-    assert counts == in_process_metrics()
+    assert scoring.counts_to_metrics(counts) == in_process_metrics()
     assert counts == {
-        "total": 6,
-        "valid": 3,
-        "complete": 5,
-        "consistent": 5,
-        "timely": 5,
-        "unique": 2,
-        "bad": {"format": 1, "range": 2},
+        "total": 8,
+        "complete": 7,
+        "consistent": 6,
+        "accurate": 5,
+        "timely": 4,
+        "unique": 3,
+        "repaired": 1,
+        "bad": {"format": 1, "range": 2, "timestamp": 1},
+        "repair_kinds": {"number_format": 1},
     }
 
 
@@ -89,15 +100,43 @@ def test_clean_pipe_matches_local_executor(tmp_path: Path, monkeypatch):
 
     cleaned = (tmp_path / "artifacts" / "stream-test" / "ratings-cleaned.dat").read_text(encoding="iso-8859-1")
     assert sorted(reduced.decode("latin-1").splitlines()) == sorted(cleaned.splitlines())
-    assert cleaned.splitlines() == ["1::10::5::200", "3::30::3::400"]
+    assert cleaned.splitlines() == [
+        "1::10::5::946771200",
+        "3::30::3::978307200",
+        "4::40::4::1009843200",
+    ]
 
 
-def test_dimensions_cover_all_five_quality_dimensions():
+def test_quarantine_pipe_keeps_rejected_rows_with_reasons(tmp_path: Path):
+    staging = stage_scripts(tmp_path)
+    reduced = run_script(
+        staging,
+        "quarantine_reducer.py",
+        shuffle(run_script(staging, "quarantine_mapper.py", SAMPLE.encode("latin-1"))),
+    )
+    lines = reduced.decode("latin-1").splitlines()
+    assert len(lines) == 4
+    reasons = sorted(line.split("\t", 1)[0] for line in lines)
+    assert reasons == ["format", "range", "range", "timestamp"]
+
+
+def test_dimensions_measure_distinct_properties():
     before = in_process_metrics()
     after = scoring.counts_to_metrics(
-        {"total": before["unique"], "valid": before["unique"], "complete": before["unique"],
-         "consistent": before["unique"], "timely": before["unique"], "unique": before["unique"], "bad": {}}
+        {"total": before["unique"], "complete": before["unique"], "consistent": before["unique"],
+         "accurate": before["unique"], "timely": before["unique"], "unique": before["unique"],
+         "repaired": 0, "bad": {}, "repair_kinds": {}}
     )
-    dimensions = scoring.dimensions_from(before, after, RULES)
-    assert [item["dimension"] for item in dimensions] == list(scoring.DIMENSIONS)
-    assert all(item["after"] == 100.0 for item in dimensions)
+    dimensions = {item["dimension"]: item for item in scoring.dimensions_from(before, after, RULES)}
+    assert list(dimensions) == list(scoring.DIMENSIONS)
+    assert dimensions["accurate"]["before"] == 62.5
+    assert dimensions["completeness"]["before"] == 87.5
+    assert dimensions["unique"]["before"] == 75.0
+    assert dimensions["up_to_date"]["before"] == 80.0
+    assert dimensions["consistent"]["before"] == 75.0
+    assert all(item["after"] == 100.0 for item in dimensions.values())
+    assert scoring.quarantine_summary(before) == {
+        "records": 4,
+        "by_reason": {"format": 1, "range": 2, "timestamp": 1},
+    }
+    assert scoring.repair_summary(before) == {"records": 1, "by_kind": {"number_format": 1}}

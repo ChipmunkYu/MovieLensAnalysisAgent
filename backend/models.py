@@ -14,6 +14,7 @@ STAGE_PROGRESS = {
     "upload": 15,
     "score_before": 30,
     "clean": 55,
+    "quarantine": 65,
     "score_after": 75,
     "download": 90,
     "publish": 100,

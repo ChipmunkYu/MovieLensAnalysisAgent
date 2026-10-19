@@ -61,6 +61,11 @@ class TaskResult(BaseModel):
     rows_after: int
     dispositions: list[Disposition]
     explanation: str
+    repairs: dict | None = None
+    quarantine: dict | None = None
+    method: dict[str, str] | None = None
+    limitations: list[str] | None = None
+    unverified: list[str] | None = None
     rule_version: str
     data_version: str | None = None
     output_data_version: str | None = None

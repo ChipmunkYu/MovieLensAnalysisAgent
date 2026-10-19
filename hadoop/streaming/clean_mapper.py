@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit valid rows keyed by user and movie so the reducer can deduplicate."""
+"""Emit usable rows in canonical form, keyed by user and movie for deduplication."""
 
 from __future__ import annotations
 
@@ -19,9 +19,10 @@ def main() -> None:
     rules = load_rules()
     out = sys.stdout.buffer
     for raw in sys.stdin.buffer:
-        row = classify(raw.decode("latin-1"), rules)["row"]
-        if not row:
+        info = classify(raw.decode("latin-1"), rules)
+        if info["bad"] is not None:
             continue
+        row = info["row"]
         out.write(
             f"C:{row['user']}:{row['movie']}\t{row['timestamp']}\t{row['rating']:g}\n".encode("ascii")
         )

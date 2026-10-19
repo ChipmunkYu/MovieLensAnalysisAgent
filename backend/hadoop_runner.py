@@ -20,7 +20,14 @@ from backend.config import artifact_dir, data_version, time_boundary
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCRIPTS = ROOT / "hadoop" / "streaming"
-SCRIPT_NAMES = ("score_mapper.py", "score_reducer.py", "clean_mapper.py", "clean_reducer.py")
+SCRIPT_NAMES = (
+    "score_mapper.py",
+    "score_reducer.py",
+    "clean_mapper.py",
+    "clean_reducer.py",
+    "quarantine_mapper.py",
+    "quarantine_reducer.py",
+)
 
 
 class HadoopError(RuntimeError):
@@ -172,7 +179,17 @@ def _hdfs_try(hdfs: str, *args: str, stage: str) -> None:
 
 
 def _read_counts(directory: Path) -> dict:
-    counts: dict = {"total": 0, "valid": 0, "complete": 0, "consistent": 0, "timely": 0, "unique": 0, "bad": {}}
+    counts: dict = {
+        "total": 0,
+        "complete": 0,
+        "consistent": 0,
+        "accurate": 0,
+        "timely": 0,
+        "unique": 0,
+        "repaired": 0,
+        "bad": {},
+        "repair_kinds": {},
+    }
     parts = sorted(directory.glob("part-*"))
     if not parts:
         raise HadoopError(f"Hadoop 作业没有产生 part 输出目录：{directory}")
@@ -186,6 +203,9 @@ def _read_counts(directory: Path) -> dict:
                 if key.startswith("__bad:"):
                     reason = key[len("__bad:"):]
                     counts["bad"][reason] = counts["bad"].get(reason, 0) + value
+                elif key.startswith("__repair:"):
+                    kind = key[len("__repair:"):]
+                    counts["repair_kinds"][kind] = counts["repair_kinds"].get(kind, 0) + value
                 elif key == "__unique":
                     counts["unique"] += value
                 elif key.startswith("__"):
@@ -202,13 +222,13 @@ def _get(hdfs: str, source: str, destination: Path, stage: str) -> Path:
 
 
 def run_hadoop(task_id: str, input_value: str, rules: dict, progress=None) -> tuple[dict, list]:
-    from backend.executors import resolve_input
+    from backend.executors import resolve_input, result_payload, write_quarantine
 
     hadoop, hdfs, jar = preflight()
     source = resolve_input(input_value)
     work_root = _env("HDFS_WORK_DIR", "/movielens/work").rstrip("/")
     base = f"{work_root}/{task_id}"
-    paths = {name: f"{base}/{name}" for name in ("raw", "before", "clean", "after")}
+    paths = {name: f"{base}/{name}" for name in ("raw", "before", "clean", "quarantine", "after")}
 
     with tempfile.TemporaryDirectory(prefix=f"movielens-{task_id[:8]}-") as temp:
         workdir = Path(temp)
@@ -216,10 +236,9 @@ def run_hadoop(task_id: str, input_value: str, rules: dict, progress=None) -> tu
 
         if progress:
             progress("upload")
-        for name in ("before", "clean", "after"):
+        _hdfs_try(hdfs, "-rm", "-r", "-f", paths["raw"], stage="upload")
+        for name in ("before", "clean", "quarantine", "after"):
             _hdfs_try(hdfs, "-rm", "-r", "-f", paths[name], stage="upload")
-        _hdfs(hdfs, "-mkdir", "-p", paths["raw"], stage="upload")
-        _hdfs(hdfs, "-rm", "-r", "-f", paths["raw"], stage="upload")
         _hdfs(hdfs, "-mkdir", "-p", paths["raw"], stage="upload")
         _hdfs(hdfs, "-put", "-f", str(source), f"{paths['raw']}/{source.name}", stage="upload")
 
@@ -237,6 +256,12 @@ def run_hadoop(task_id: str, input_value: str, rules: dict, progress=None) -> tu
         )
         _job(
             hadoop=hadoop, jar=jar, staging=staging,
+            mapper="quarantine_mapper.py", reducer="quarantine_reducer.py",
+            source=paths["raw"], output=paths["quarantine"],
+            name=f"movielens-quarantine-{task_id[:8]}", stage="quarantine", progress=progress,
+        )
+        _job(
+            hadoop=hadoop, jar=jar, staging=staging,
             mapper="score_mapper.py", reducer="score_reducer.py",
             source=paths["clean"], output=paths["after"],
             name=f"movielens-score-after-{task_id[:8]}", stage="score_after", progress=progress,
@@ -247,6 +272,7 @@ def run_hadoop(task_id: str, input_value: str, rules: dict, progress=None) -> tu
         before_dir = _get(hdfs, paths["before"], workdir / "before", "download")
         after_dir = _get(hdfs, paths["after"], workdir / "after", "download")
         clean_dir = _get(hdfs, paths["clean"], workdir / "clean", "download")
+        quarantine_dir = _get(hdfs, paths["quarantine"], workdir / "quarantine", "download")
 
         before = scoring.counts_to_metrics(_read_counts(before_dir))
         after = scoring.counts_to_metrics(_read_counts(after_dir))
@@ -261,20 +287,17 @@ def run_hadoop(task_id: str, input_value: str, rules: dict, progress=None) -> tu
                     text += "\n"
                 stream.write(text)
 
-        result = {
-            "dimensions": scoring.dimensions_from(before, after, rules),
-            "rows_before": before["total"],
-            "rows_after": after["total"],
-            "dispositions": scoring.dispositions_from(before, after),
-            "explanation": scoring.explain(before, after),
-            "rule_version": rules["version"],
-            "data_version": data_version(),
-            "output_data_version": f"{data_version()}-clean",
-            "t1": time_boundary("T1"),
-            "t2": time_boundary("T2"),
-            "hdfs_paths": paths,
-        }
+        rejected: list[tuple[str, str]] = []
+        for part in sorted(quarantine_dir.glob("part-*")):
+            for line in part.read_text(encoding="iso-8859-1").splitlines():
+                reason, separator, raw = line.partition("\t")
+                if separator:
+                    rejected.append((reason, raw))
+        quarantine_file = output_dir / "ratings-quarantine.tsv"
+        write_quarantine(quarantine_file, rejected)
 
+        result = result_payload(before, after, rules)
+        result["hdfs_paths"] = paths
         report = output_dir / "report.json"
         report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -284,6 +307,7 @@ def run_hadoop(task_id: str, input_value: str, rules: dict, progress=None) -> tu
 
     artifacts = [
         {"name": cleaned.name, "path": str(cleaned), "size": cleaned.stat().st_size},
+        {"name": quarantine_file.name, "path": str(quarantine_file), "size": quarantine_file.stat().st_size},
         {"name": report.name, "path": str(report), "size": report.stat().st_size},
     ]
     return result, artifacts

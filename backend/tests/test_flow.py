@@ -15,7 +15,7 @@ def flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data = tmp_path / "data"
     data.mkdir()
     (data / "ratings.dat").write_text(
-        "1::10::4::100\n1::10::5::200\n2::20::9::300\nbad row\n3::30::3::400\n",
+        "1::10::4::946684800\n1::10::5::946771200\n2::20::9::946857600\nbad row\n3::30::3::978307200\n",
         encoding="iso-8859-1",
     )
     monkeypatch.setenv("DATA_DIR", str(data))
@@ -65,13 +65,21 @@ def test_default_agent_work_result_and_artifact(flow):
         "accurate", "completeness", "unique", "up_to_date", "consistent"
     }
     assert all(score["before"] != score["after"] for score in result["dimensions"][:3])
-    assert result["rule_version"] == "1.0.0"
+    assert result["rule_version"] == "2.0.0"
+    assert result["quarantine"]["records"] == 2
+    assert result["repairs"]["records"] == 0
+    assert result["method"] and result["limitations"] and result["unverified"]
 
     artifacts = client.get(f"/api/tasks/{task_id}/artifacts").json()["artifacts"]
     assert "path" not in artifacts[0]
     download = client.get(artifacts[0]["download_url"])
     assert download.status_code == 200
-    assert download.content.decode("iso-8859-1") == "1::10::5::200\n3::30::3::400\n"
+    assert download.content.decode("iso-8859-1") == "1::10::5::946771200\n3::30::3::978307200\n"
+    assert {artifact["name"] for artifact in artifacts} == {
+        "ratings-cleaned.dat",
+        "ratings-quarantine.tsv",
+        "report.json",
+    }
 
     with Session() as session:
         task = session.get(Task, task_id)
@@ -82,7 +90,7 @@ def test_default_agent_work_result_and_artifact(flow):
     assert client.get(f"/api/tasks/{task_id}/artifacts/secret.txt").status_code == 404
 
     rules = client.get("/api/rules/default").json()
-    assert rules["version"] == "1.0.0" and rules["name"] and rules["rules"] and rules["raw"]
+    assert rules["version"] == "2.0.0" and rules["name"] and rules["rules"] and rules["raw"]
 
 
 def test_missing_hadoop_binary_marks_task_failed(flow, monkeypatch: pytest.MonkeyPatch):

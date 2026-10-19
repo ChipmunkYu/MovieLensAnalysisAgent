@@ -24,12 +24,14 @@ from backend.service import create_task, work_once
 ROOT = Path(__file__).resolve().parents[2]
 REAL_RUN = subprocess.run
 SAMPLE = (
-    "1::10::4::100\n"
-    "1::10::5::200\n"
-    "2::20::9::300\n"
+    "1::10::4::946684800\n"
+    "1::10::5::946771200\n"
+    "2::20::9::946857600\n"
     "bad row\n"
-    "3::30::3::400\n"
-    "5::50::0::600\n"
+    "3::30::3::978307200\n"
+    "4::40::4.0::1009843200\n"
+    "5::50::0::1041379200\n"
+    "6::60::5::100\n"
 )
 
 
@@ -118,7 +120,7 @@ def cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
         if mapped.returncode:
             return subprocess.CompletedProcess(command, mapped.returncode, b"", mapped.stderr)
-        shuffled = ("\n".join(sorted(mapped.stdout.decode("ascii").splitlines())) + "\n").encode("ascii")
+        shuffled = ("\n".join(sorted(mapped.stdout.decode("latin-1").splitlines())) + "\n").encode("latin-1")
         reduced = REAL_RUN(
             [sys.executable, reducer],
             input=shuffled,
@@ -155,18 +157,31 @@ def test_hadoop_pipeline_matches_local_executor(cluster):
         assert local_task.status == TaskStatus.SUCCESS, local_task.error
 
     assert hadoop_result["dimensions"] == local_task.result["dimensions"]
-    assert hadoop_result["rows_before"] == local_task.result["rows_before"] == 6
-    assert hadoop_result["rows_after"] == local_task.result["rows_after"] == 2
+    assert hadoop_result["rows_before"] == local_task.result["rows_before"] == 8
+    assert hadoop_result["rows_after"] == local_task.result["rows_after"] == 3
     assert hadoop_result["dispositions"] == local_task.result["dispositions"]
+    assert hadoop_result["repairs"] == {"records": 1, "by_kind": {"number_format": 1}}
+    assert hadoop_result["quarantine"] == {"records": 4, "by_reason": {"format": 1, "range": 2, "timestamp": 1}}
     assert hadoop_result["data_version"] == "ml1m-test-v1"
     assert hadoop_result["output_data_version"] == "ml1m-test-v1-clean"
     assert hadoop_result["t1"] is None and hadoop_result["t2"] is None
     assert hadoop_result["hdfs_paths"]["clean"].endswith("/clean")
 
     cleaned = Path(hadoop_artifacts[0]["path"]).read_text(encoding="iso-8859-1")
-    assert sorted(cleaned.splitlines()) == ["1::10::5::200", "3::30::3::400"]
-    assert {artifact["name"] for artifact in hadoop_artifacts} == {"ratings-cleaned.dat", "report.json"}
+    assert sorted(cleaned.splitlines()) == [
+        "1::10::5::946771200",
+        "3::30::3::978307200",
+        "4::40::4::1009843200",
+    ]
+    quarantine = Path(hadoop_artifacts[1]["path"]).read_text(encoding="iso-8859-1").splitlines()
+    assert len(quarantine) == 4
+    assert {artifact["name"] for artifact in hadoop_artifacts} == {
+        "ratings-cleaned.dat",
+        "ratings-quarantine.tsv",
+        "report.json",
+    }
     assert (tmp_path / "hdfs" / "movielens" / "work" / hadoop_task.id / "report.json").is_file()
+    assert (tmp_path / "hdfs" / "movielens" / "work" / hadoop_task.id / "quarantine").is_dir()
 
 
 def test_missing_streaming_jar_fails_with_actionable_message(cluster, monkeypatch: pytest.MonkeyPatch):

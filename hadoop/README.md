@@ -6,10 +6,12 @@
 
 ```
 hadoop/streaming/
-  score_mapper.py    统计 total/valid/complete/consistent/timely 与 (user, movie) 键
-  score_reducer.py   汇总计数并输出 M 行指标
-  clean_mapper.py    输出有效行，键为 (user, movie)
-  clean_reducer.py   同一键保留最新时间戳，输出 :: 格式
+  score_mapper.py       统计五维计数与 (user, movie) 业务键
+  score_reducer.py      汇总计数并输出 M 行指标
+  clean_mapper.py       输出可用行，键为 (user, movie)
+  clean_reducer.py      同一键保留最新时间戳，输出 :: 格式
+  quarantine_mapper.py  输出被拒绝的行及原因
+  quarantine_reducer.py 原样输出隔离记录
 ```
 
 `backend/scoring.py` 在选择规则和判定逻辑上被本地执行器与上述脚本共同使用；提交作业时该文件会随 `-file` 一起分发到节点。
@@ -37,6 +39,7 @@ hadoop/streaming/
   raw/         上传的原始 ratings.dat
   before/      清洗前评分输出
   clean/       清洗后数据
+  quarantine/  无法修复的记录及原因
   after/       清洗后评分输出
   report.json  结果报告
 ```
@@ -102,4 +105,4 @@ hdfs dfs -cat /movielens/work/manual/before/part-00000
 - HDFS 权限与路径配置；
 - 大文件下的执行时间与 reducer 数量。
 
-第一次在真实集群运行时，建议先用 `data/sample/ratings.dat` 提交一次，确认 `before/`、`clean/`、`after/` 三个目录都有 `part-*` 输出后再换全量数据。
+第一次在真实集群运行时，建议先用 `data/sample/ratings.dat` 提交一次，确认 `before/`、`clean/`、`quarantine/`、`after/` 四个目录都有 `part-*` 输出后再换全量数据。
