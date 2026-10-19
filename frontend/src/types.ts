@@ -38,11 +38,17 @@ export interface TaskResult {
   after_scores?: Record<string, number>
   dispositions?: DispositionItem[]
   summary?: DispositionItem[]
+  repairs?: { records: number; by_kind?: Record<string, number> }
+  quarantine?: { records: number; by_reason?: Record<string, number> }
+  method?: Record<string, string>
+  limitations?: string[]
+  unverified?: string[]
   rows_before?: number
   rows_after?: number
   unresolved_issues?: string[]
   explanation?: string
   data_version?: string
+  output_data_version?: string
   rule_version?: string
   t1?: string
   t2?: string

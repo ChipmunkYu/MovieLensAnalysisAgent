@@ -31,10 +31,15 @@ def work_once(session: Session) -> Task | None:
     task = claim_one(session)
     if not task:
         return None
+
+    def mark(stage: str) -> None:
+        task.stage = stage
+        session.commit()
+
     try:
         rules = load_rules()
         runner = run_local if task.executor == "local" else run_hadoop
-        task.result, task.artifacts = runner(task.id, task.input_path, rules)
+        task.result, task.artifacts = runner(task.id, task.input_path, rules, progress=mark)
         task.status = TaskStatus.SUCCESS
     except Exception as exc:  # task failures belong in persistent task state
         task.status = TaskStatus.FAILED

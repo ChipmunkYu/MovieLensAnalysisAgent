@@ -1,28 +1,70 @@
 {
-  "version": "1.0.0",
-  "name": "MovieLens 默认清洗规则",
-  "rules": [
-    {"id": "format", "name": "格式与完整性校验", "description": "按 :: 分隔并要求四个字段完整", "enabled": true},
-    {"id": "range", "name": "标识与评分校验", "description": "ID 为正数且评分位于 1 至 5", "enabled": true},
-    {"id": "deduplicate", "name": "评分去重", "description": "同一用户与电影保留最新时间戳记录", "enabled": true},
-    {"id": "quality", "name": "五维质量评分", "description": "基于实际记录计算准确、完整、唯一、时效和一致性", "enabled": true}
-  ],
+  "version": "2.0.0",
+  "name": "MovieLens 1M 默认清洗与评分方案",
+  "dataset": {
+    "name": "ml-1m",
+    "coverage_start": "2000-01-01T00:00:00Z",
+    "coverage_end": "2003-02-28T23:59:59Z",
+    "note": "时间戳按 Unix 秒解释；窗口取自数据集说明中的采集期。"
+  },
   "format": {
     "delimiter": "::",
     "columns": ["user_id", "movie_id", "rating", "timestamp"]
   },
   "validation": {
-    "rating_min": 1.0,
-    "rating_max": 5.0,
-    "positive_ids": true,
-    "non_negative_timestamp": true
+    "rating_min": 1,
+    "rating_max": 5,
+    "rating_integer": true,
+    "positive_ids": true
+  },
+  "cleaning": {
+    "trim_fields": true,
+    "normalize_numbers": true,
+    "duplicate_strategy": "keep_latest",
+    "quarantine_invalid": true
   },
   "duplicates": {
-    "key": ["user_id", "movie_id"],
-    "strategy": "keep_latest"
+    "key": ["user_id", "movie_id"]
   },
+  "rules": [
+    {
+      "id": "presence",
+      "name": "必填字段检查",
+      "description": "四个字段都要存在且非空白，否则隔离",
+      "enabled": true
+    },
+    {
+      "id": "canonical",
+      "name": "格式规范化",
+      "description": "去除首尾空白，数字改为规范整数写法；取值不变",
+      "enabled": true
+    },
+    {
+      "id": "domain",
+      "name": "取值域检查",
+      "description": "UserID、MovieID 为正整数，评分为 1–5 的整数",
+      "enabled": true
+    },
+    {
+      "id": "timestamp",
+      "name": "时间戳窗口检查",
+      "description": "时间戳必须落在数据集声明的采集期内，否则隔离",
+      "enabled": true
+    },
+    {
+      "id": "deduplicate",
+      "name": "业务键去重",
+      "description": "同一用户与电影保留时间戳最新的一条",
+      "enabled": true
+    },
+    {
+      "id": "quality",
+      "name": "五维质量评分",
+      "description": "准确、完整、唯一、时效、一致分别衡量不同问题",
+      "enabled": true
+    }
+  ],
   "scoring": {
-    "dimension_scale": 100,
-    "timely_timestamp_min": 0
+    "dimension_scale": 100
   }
 }
