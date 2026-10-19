@@ -96,8 +96,7 @@ def get_default_rules():
 def agent_message(body: AgentMessage, session: Session = Depends(get_db)):
     try:
         reply, data = route(session, body)
-        created = reply.startswith("已创建") or "create_task" in reply
-        task_id = data.get("id") if created and isinstance(data, dict) else None
+        task_id = data.get("id") if isinstance(data, dict) and isinstance(data.get("id"), str) else None
         return AgentReply(reply=reply, task_id=task_id, data=data)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

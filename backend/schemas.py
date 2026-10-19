@@ -31,6 +31,7 @@ class TaskView(BaseModel):
 class AgentMessage(BaseModel):
     message: str = Field(min_length=1)
     input_path: str | None = None
+    task_id: str | None = None
 
 
 class AgentReply(BaseModel):

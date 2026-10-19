@@ -36,12 +36,14 @@ svg { width: 19px; height: 19px; flex: 0 0 auto; }
 .avatar svg { width: 16px; height: 16px; }
 .message-body { min-width: 0; font-size: 14px; line-height: 1.75; }
 .message-body p { margin: 0 0 13px; }
+.message-copy { white-space: pre-wrap; }
 .message-label { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .message-body h1 { margin: 3px 0 14px; max-width: 590px; font: 600 clamp(30px, 4.3vw, 50px)/1.14 "Noto Serif SC", serif; letter-spacing: -.04em; }
 .message-body h2 { margin: 4px 0 13px; font: 600 23px/1.3 "Noto Serif SC", serif; }
 .welcome .message-body > p:last-child { max-width: 610px; color: var(--muted); }
 .user-message { display: flex; justify-content: flex-end; margin: 0 0 42px 70px; animation: reveal .3s ease both; }
 .user-message div { max-width: 620px; padding: 14px 18px; border-radius: 18px 18px 4px 18px; background: #e9eee9; color: #25332f; font-size: 14px; line-height: 1.65; }
+.user-copy { white-space: pre-wrap; }
 .status-line { display: flex; align-items: center; gap: 10px; margin: 2px 0 12px; }
 .status-line strong { font: 600 20px "Noto Serif SC", serif; }
 .status-line code { max-width: 130px; overflow: hidden; text-overflow: ellipsis; padding: 3px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 9px; }

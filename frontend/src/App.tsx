@@ -11,6 +11,7 @@ const DIMENSIONS: Record<string, [string, string]> = {
 }
 type IconName = 'send' | 'file' | 'folder' | 'chart' | 'chevron' | 'panel' | 'close' | 'spark' | 'alert' | 'report' | 'rule'
 type Selection = { type: 'scores' } | { type: 'report' } | { type: 'rule'; rule: Rule }
+type ChatEntry = { role: 'user' | 'assistant'; content: string; tone?: 'normal' | 'error' }
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -53,11 +54,31 @@ function formatBytes(value?: number) {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 ** 2).toFixed(1)} MB`
 }
+function resultSummary(result: TaskResult, dispositions: DispositionItem[], scores: DimensionScore[]) {
+  const rowText = `清洗与质量评估已完成，记录数从 ${formatCount(result.rows_before)} 变为 ${formatCount(result.rows_after)}。`
+  const scoreText = scores.length
+    ? `五维变化为：${scores.map(score => {
+        const names = DIMENSIONS[score.dimension.toLowerCase()] ?? [score.dimension, 'Quality']
+        const delta = clampScore(score.after) - clampScore(score.before)
+        return `${names[0]} ${delta > 0 ? '+' : ''}${delta.toFixed(1)}`
+      }).join('；')}。`
+    : ''
+  const dispositionText = dispositions.length
+    ? `处置结果包括：${dispositions.map(item => `${item.label} ${formatCount(item.count)} 条`).join('；')}。`
+    : ''
+  const explanationText = result.explanation ? `${result.explanation}` : ''
+  return [rowText, scoreText, dispositionText, explanationText, '详细对比、规则与结果文件可在右侧资源面板查看。'].filter(Boolean).join(' ')
+}
+
+function MessageText({ content }: { content: string }) {
+  const blocks = content.split(/\n{2,}/).map(block => block.trim()).filter(Boolean)
+  if (!blocks.length) return null
+  return <>{blocks.map((block, index) => <p key={`${index}-${block.slice(0, 16)}`} className="message-copy">{block}</p>)}</>
+}
 
 export default function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
-  const [lastPrompt, setLastPrompt] = useState('')
-  const [agentReply, setAgentReply] = useState('')
+  const [history, setHistory] = useState<ChatEntry[]>([])
   const [task, setTask] = useState<Task>()
   const [result, setResult] = useState<TaskResult>()
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
@@ -67,6 +88,7 @@ export default function App() {
   const [panelOpen, setPanelOpen] = useState(true)
   const [expanded, setExpanded] = useState(() => new Set(['task', 'charts', 'files', 'rules']))
   const [selection, setSelection] = useState<Selection>()
+  const [reportedTaskId, setReportedTaskId] = useState('')
   const streamEnd = useRef<HTMLDivElement>(null)
   const taskId = task ? taskIdOf(task) : undefined
   const scores = useMemo(() => scoresOf(result), [result])
@@ -74,9 +96,10 @@ export default function App() {
   const running = submitting || !!task && !TERMINAL.has(task.status)
   const failed = task?.status === 'failed'
   const progress = Math.max(0, Math.min(100, task?.progress == null ? (task?.status === 'succeeded' ? 100 : 0) : task.progress <= 1 ? task.progress * 100 : task.progress))
+  const pendingCopy = taskId && task && TERMINAL.has(task.status) ? '正在思考…' : '正在解析并创建任务…'
 
   useEffect(() => { api.getDefaultRules().then(setRules).catch(() => {}) }, [])
-  useEffect(() => { streamEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [task?.status, result, error])
+  useEffect(() => { streamEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [history, task?.status, result, error])
   useEffect(() => {
     function closeOnEscape(event: globalThis.KeyboardEvent) { if (event.key === 'Escape') setPanelOpen(false) }
     window.addEventListener('keydown', closeOnEscape)
@@ -98,18 +121,42 @@ export default function App() {
     }, 2000)
     return () => window.clearInterval(timer)
   }, [taskId, task?.status])
+  useEffect(() => {
+    if (!taskId || task?.status !== 'succeeded' || !result || reportedTaskId === taskId) return
+    setHistory(current => [...current, { role: 'assistant', content: resultSummary(result, dispositions, scores) }])
+    setReportedTaskId(taskId)
+  }, [taskId, task?.status, result, dispositions, scores, reportedTaskId])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     const message = prompt.trim()
     if (!message || running) return
-    setSubmitting(true); setError(''); setTask(undefined); setResult(undefined); setArtifacts([]); setSelection(undefined); setLastPrompt(message); setAgentReply('')
+    const currentTaskId = taskId
+    const keepCurrentTask = !!currentTaskId
+    setSubmitting(true); setError(''); setSelection(undefined); setHistory(current => [...current, { role: 'user', content: message }]); setPrompt('')
+    if (!keepCurrentTask) {
+      setTask(undefined); setResult(undefined); setArtifacts([])
+      setReportedTaskId('')
+    }
     try {
-      const agent = await api.sendMessage(message)
-      setAgentReply(agent.reply)
+      const agent = await api.sendMessage(message, currentTaskId)
+      setHistory(current => [...current, { role: 'assistant', content: agent.reply }])
       const id = taskIdOf(agent)
-      setTask(id ? await api.getTask(id) : await api.createTask())
-    } catch (cause) { setError(cause instanceof Error ? cause.message : '任务提交失败，请稍后重试') }
+      if (!id) return
+      const nextTask = await api.getTask(id)
+      setTask(nextTask)
+      if (id !== currentTaskId && !TERMINAL.has(nextTask.status)) {
+        setResult(undefined); setArtifacts([])
+      }
+      if (nextTask.status === 'succeeded') {
+        const [nextResult, nextArtifacts] = await Promise.all([api.getResult(id), api.getArtifacts(id)])
+        setResult(nextResult); setArtifacts(nextArtifacts)
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : '任务提交失败，请稍后重试'
+      setError(message)
+      setHistory(current => [...current, { role: 'assistant', content: message, tone: 'error' }])
+    }
     finally { setSubmitting(false) }
   }
   function submitOnShortcut(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -135,29 +182,33 @@ export default function App() {
           <div className="message-body"><p className="message-label">治理助手</p><h1>从一句清晰的要求开始。</h1><p>我会执行 MovieLens 数据清洗，跟踪任务进度，并将图表、规则与结果文件整理到右侧资源面板。</p></div>
         </section>
 
-        {lastPrompt && <section className="user-message" aria-label="你的请求"><div>{lastPrompt}</div></section>}
+        {history.map((entry, index) => entry.role === 'user'
+          ? <section key={`user-${index}`} className="user-message" aria-label="你的请求"><div className="user-copy">{entry.content}</div></section>
+          : <section key={`assistant-${index}`} className={`assistant-message ${entry.tone === 'error' ? 'task-message' : ''}`}>
+              <div className="avatar"><Icon name={entry.tone === 'error' ? 'alert' : 'spark'} /></div>
+              <div className="message-body">
+                <p className="message-label">治理助手</p>
+                <MessageText content={entry.content} />
+              </div>
+            </section>
+        )}
 
-        {(submitting || task || error) && <section className="assistant-message task-message" aria-live="polite">
+        {submitting && <section className="assistant-message task-message" aria-live="polite">
+          <div className="avatar"><Icon name="spark" /></div>
+          <div className="message-body">
+            <p className="message-label">治理助手</p>
+            <div className="status-line"><strong>{pendingCopy}</strong><span className="spinner" aria-hidden="true" /></div>
+          </div>
+        </section>}
+
+        {((task && !TERMINAL.has(task.status)) || error || failed) && <section className="assistant-message task-message" aria-live="polite">
           <div className="avatar"><Icon name={error || failed ? 'alert' : 'spark'} /></div>
           <div className="message-body">
             <p className="message-label">治理助手</p>
             {error ? <div className="error-message"><strong>暂时无法继续</strong><p>{error}</p><button type="button" onClick={() => setError('')}>关闭提示</button></div> : failed ? <div className="error-message"><strong>任务执行失败</strong><p>{errorText(task?.error) || '任务未生成可用结果，请检查服务后重试。'}</p></div> : <>
-              <div className="status-line"><strong>{statusText(task?.status)}</strong>{taskId && <code title={taskId}>#{taskId.slice(0, 8)}</code>}</div>
-              {agentReply && <p>{agentReply}</p>}
-              {!result && <><p className="stage-copy">{task?.stage ?? (submitting ? '正在解析你的请求' : '等待后端返回当前阶段')} · {Math.round(progress)}%</p><div className="progress-track" aria-label={`任务进度 ${Math.round(progress)}%`}><span style={{ width: `${progress}%` }} /></div></>}
+              <div className="status-line"><strong>{statusText(task?.status)}</strong></div>
+              {!result && <><p className="stage-copy">{task?.stage ?? '等待后端返回当前阶段'} · {Math.round(progress)}%</p><div className="progress-track" aria-label={`任务进度 ${Math.round(progress)}%`}><span style={{ width: `${progress}%` }} /></div></>}
             </>}
-          </div>
-        </section>}
-
-        {result && <section className="assistant-message result-message">
-          <div className="avatar"><Icon name="spark" /></div>
-          <div className="message-body">
-            <p className="message-label">治理助手 · 结果摘要</p>
-            <h2>清洗与质量评估已完成</h2>
-            <p>记录数从 <b>{formatCount(result.rows_before)}</b> 变为 <b>{formatCount(result.rows_after)}</b>{dispositions.length ? `，生成 ${dispositions.length} 项处置记录。` : '。'}</p>
-            {scores.length ? <div className="delta-summary" aria-label="五维评分变化摘要">{scores.map(score => { const names = DIMENSIONS[score.dimension.toLowerCase()] ?? [score.dimension, 'Quality']; const delta = clampScore(score.after) - clampScore(score.before); return <span key={score.dimension}><b>{names[0]}</b><i className={delta < 0 ? 'negative' : ''}>{delta > 0 ? '+' : ''}{delta.toFixed(1)}</i></span> })}</div> : <p className="muted-copy">接口未返回五维评分。</p>}
-            {result.explanation && <p className="explanation">{result.explanation}</p>}
-            <button className="text-button" type="button" onClick={() => select({ type: 'scores' })} disabled={!scores.length}>在资源面板查看详细对比 <Icon name="chevron" /></button>
           </div>
         </section>}
         <div ref={streamEnd} />

@@ -86,6 +86,32 @@ def test_default_agent_work_result_and_artifact(flow):
     assert rules["version"] == "1.0.0" and rules["name"] and rules["rules"] and rules["raw"]
 
 
+def test_followup_uses_current_task_context(flow):
+    client, Session = flow
+    created = client.post(
+        "/api/agent/messages",
+        json={"message": "请使用默认规则清洗 MovieLens 1M，评估清洗前后的五个数据质量维度，并说明处理了哪些问题。"},
+    )
+    assert created.status_code == 200
+    task_id = created.json()["task_id"]
+
+    with Session() as session:
+        completed = work_once(session)
+    assert completed and completed.status == TaskStatus.SUCCESS
+
+    followup = client.post(
+        "/api/agent/messages",
+        json={"message": "清洗后为什么准确性提高了？", "task_id": task_id},
+    )
+    assert followup.status_code == 200
+    body = followup.json()
+    assert body["task_id"] is None
+    assert "准确性从" in body["reply"]
+    assert body["data"]["id"] == task_id
+    assert body["data"]["rows_before"] == 5
+    assert body["data"]["rows_after"] == 2
+
+
 def test_missing_hadoop_marks_task_failed(flow, monkeypatch: pytest.MonkeyPatch):
     _, Session = flow
     monkeypatch.setenv("HADOOP_BIN", "definitely-not-installed-hadoop")

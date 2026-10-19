@@ -22,8 +22,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  sendMessage: (message: string) => request<AgentMessageResponse>('/api/agent/messages', {
-    method: 'POST', body: JSON.stringify({ message }),
+  sendMessage: (message: string, taskId?: string) => request<AgentMessageResponse>('/api/agent/messages', {
+    method: 'POST', body: JSON.stringify({ message, ...(taskId ? { task_id: taskId } : {}) }),
   }),
   createTask: (payload?: unknown) => request<Task>('/api/tasks', {
     method: 'POST', body: JSON.stringify(payload ?? {}),

@@ -1,6 +1,6 @@
 /local
 /.venv
-/.env
+**/.env
 /.pytest_cache
 /movie_tasks.db
 /data/artifacts
