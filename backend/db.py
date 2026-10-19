@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from backend.config import database_url
@@ -23,6 +23,15 @@ def init_db() -> None:
     from backend import models  # noqa: F401
 
     Base.metadata.create_all(engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """Apply the few additive migrations needed by existing local databases."""
+    columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+    if "stage" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN stage VARCHAR(32)"))
 
 
 def get_db():

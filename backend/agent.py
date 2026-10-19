@@ -8,7 +8,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from backend.models import Task
-from backend.config import default_input_path
+from backend.config import default_executor, default_input_path
 from backend.rules import load_rules
 from backend.schemas import AgentMessage
 from backend.service import create_task
@@ -25,7 +25,11 @@ def _task(session: Session, task_id: str) -> Task:
 
 def call_tool(session: Session, name: str, args: dict) -> dict | list:
     if name == "create_task":
-        task = create_task(session, args.get("input_path") or default_input_path(), args.get("executor", "local"))
+        task = create_task(
+            session,
+            args.get("input_path") or default_input_path(),
+            args.get("executor") or default_executor(),
+        )
         return {"id": task.id, "status": task.status.value}
     if name == "get_task":
         task = _task(session, args["task_id"])
@@ -38,6 +42,12 @@ def call_tool(session: Session, name: str, args: dict) -> dict | list:
     raise ValueError(f"unknown tool: {name}")
 
 
+def choose_executor(request: AgentMessage, text: str) -> str:
+    if request.executor:
+        return request.executor
+    return "hadoop" if "hadoop" in text else default_executor()
+
+
 def deterministic(session: Session, request: AgentMessage) -> tuple[str, dict | list]:
     text = request.message.lower()
     match = TASK_ID.search(request.message)
@@ -48,7 +58,14 @@ def deterministic(session: Session, request: AgentMessage) -> tuple[str, dict | 
         data = call_tool(session, "get_task", {"task_id": match.group()})
         return "任务状态查询完成。", data
     if any(word in text for word in ("清洗", "对比", "clean")):
-        data = call_tool(session, "create_task", {"input_path": request.input_path or default_input_path()})
+        data = call_tool(
+            session,
+            "create_task",
+            {
+                "input_path": request.input_path or default_input_path(),
+                "executor": choose_executor(request, text),
+            },
+        )
         return "已创建默认清洗与前后评分任务。", data
     if "规则" in text or "rule" in text:
         data = call_tool(session, "get_rules", {})
@@ -67,7 +84,11 @@ def model_route(session: Session, request: AgentMessage) -> tuple[str, dict | li
     }
     for name, (description, properties, required) in specs.items():
         tools.append({"type": "function", "function": {"name": name, "description": description, "parameters": {"type": "object", "properties": properties, "required": required}}})
-    content = request.message + (f"\ninput_path: {request.input_path}" if request.input_path else "")
+    content = request.message
+    if request.input_path:
+        content += f"\ninput_path: {request.input_path}"
+    if request.executor:
+        content += f"\nexecutor: {request.executor}"
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {os.environ['MODEL_API_KEY']}"},

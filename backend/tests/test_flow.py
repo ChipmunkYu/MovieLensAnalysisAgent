@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from backend.db import Base, get_db, make_engine
-from backend import executors
 from backend.main import app
 from backend.models import Task, TaskStatus
 from backend.service import create_task, work_once
@@ -22,7 +21,7 @@ def flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATA_DIR", str(data))
     monkeypatch.setenv("DEFAULT_INPUT_PATH", "ratings.dat")
     monkeypatch.setenv("ARTIFACT_DIR", str(tmp_path / "artifacts"))
-    for name in ("MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_NAME"):
+    for name in ("MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_NAME", "DEFAULT_EXECUTOR", "T1", "T2"):
         monkeypatch.delenv(name, raising=False)
     engine = make_engine(f"sqlite:///{tmp_path / 'test.db'}")
     Base.metadata.create_all(engine)
@@ -86,38 +85,23 @@ def test_default_agent_work_result_and_artifact(flow):
     assert rules["version"] == "1.0.0" and rules["name"] and rules["rules"] and rules["raw"]
 
 
-def test_missing_hadoop_marks_task_failed(flow, monkeypatch: pytest.MonkeyPatch):
+def test_missing_hadoop_binary_marks_task_failed(flow, monkeypatch: pytest.MonkeyPatch):
     _, Session = flow
     monkeypatch.setenv("HADOOP_BIN", "definitely-not-installed-hadoop")
-    monkeypatch.setenv("HADOOP_COMMAND", "definitely-not-installed-hadoop jar cleaner.jar {input} {output} {result} {rules}")
     with Session() as session:
         task = create_task(session, "ratings.dat", "hadoop")
         task_id = task.id
         completed = work_once(session)
         assert completed and completed.status == TaskStatus.FAILED
-        assert "was not found in PATH" in completed.error
-        assert session.get(type(task), task_id).status == TaskStatus.FAILED
+        assert "definitely-not-installed-hadoop" in completed.error
+        assert "HADOOP_BIN" in completed.error
+        assert session.get(Task, task_id).status == TaskStatus.FAILED
 
 
-def test_remote_hadoop_command_does_not_require_local_hadoop(flow, monkeypatch: pytest.MonkeyPatch):
-    _, Session = flow
-    calls = []
-    monkeypatch.setenv("HADOOP_BIN", "not-installed-hadoop")
-    monkeypatch.setenv("HADOOP_COMMAND", "ssh hadoop-host cleaner {input} {output} {result} {rules}")
-    monkeypatch.setenv("HADOOP_PREFLIGHT_COMMAND", "ssh hadoop-host hadoop version")
-    monkeypatch.setattr(executors.shutil, "which", lambda name: "C:/ssh.exe" if name == "ssh" else None)
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        if "cleaner" in command:
-            Path(command[-3]).write_text("1::10::4::100\n", encoding="iso-8859-1")
-            Path(command[-2]).write_text('{"rows_before": 1, "rows_after": 1}', encoding="utf-8")
-        return executors.subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(executors.subprocess, "run", fake_run)
+def test_agent_selects_hadoop_when_requested(flow, monkeypatch: pytest.MonkeyPatch):
+    client, Session = flow
+    monkeypatch.setenv("HADOOP_BIN", "definitely-not-installed-hadoop")
+    created = client.post("/api/agent/messages", json={"message": "请用 Hadoop 清洗并对比五维评分"}).json()
     with Session() as session:
-        task = create_task(session, "ratings.dat", "hadoop")
-        completed = work_once(session)
-        assert completed and completed.status == TaskStatus.SUCCESS
-    assert calls[0] == ["ssh", "hadoop-host", "hadoop", "version"]
-    assert calls[1][0] == "ssh"
+        task = session.get(Task, created["task_id"])
+        assert task.executor == "hadoop"

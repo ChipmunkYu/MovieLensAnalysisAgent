@@ -5,13 +5,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.config import default_input_path
+from backend.config import default_executor, default_input_path
 from backend.models import TaskStatus
 
 
 class TaskCreate(BaseModel):
     input_path: str = Field(default_factory=default_input_path, min_length=1)
-    executor: Literal["local", "hadoop"] = "local"
+    executor: Literal["local", "hadoop"] = Field(default_factory=default_executor)
 
 
 class TaskView(BaseModel):
@@ -22,6 +22,8 @@ class TaskView(BaseModel):
     executor: str
     rules_version: str
     status: TaskStatus
+    stage: str | None
+    progress: int
     error: str | None
     created_at: datetime
     started_at: datetime | None
@@ -31,6 +33,7 @@ class TaskView(BaseModel):
 class AgentMessage(BaseModel):
     message: str = Field(min_length=1)
     input_path: str | None = None
+    executor: Literal["local", "hadoop"] | None = None
 
 
 class AgentReply(BaseModel):
@@ -59,6 +62,11 @@ class TaskResult(BaseModel):
     dispositions: list[Disposition]
     explanation: str
     rule_version: str
+    data_version: str | None = None
+    output_data_version: str | None = None
+    t1: str | None = None
+    t2: str | None = None
+    hdfs_paths: dict[str, str] | None = None
 
 
 class ArtifactView(BaseModel):

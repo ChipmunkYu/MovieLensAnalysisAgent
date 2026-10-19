@@ -32,3 +32,16 @@ def artifact_dir() -> Path:
 
 def rules_file() -> Path:
     return env_path("RULES_FILE", "rules/default.json")
+
+
+def default_executor() -> str:
+    return os.getenv("DEFAULT_EXECUTOR", "local")
+
+
+def data_version() -> str:
+    return os.getenv("DATA_VERSION", "ml1m-raw-v1")
+
+
+def time_boundary(name: str) -> str | None:
+    value = os.getenv(name)
+    return value.strip() if value and value.strip() else None
