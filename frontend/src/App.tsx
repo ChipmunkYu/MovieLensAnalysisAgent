@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
-import type { Artifact, DimensionScore, DispositionItem, Rule, RuleSet, Task, TaskResult } from './types'
+import type { AnalysisEnvelope, Artifact, DimensionScore, DispositionItem, Rule, RuleSet, Task, TaskResult } from './types'
 
 const DEFAULT_PROMPT = '请使用默认规则清洗 MovieLens 1M，评估清洗前后的五个数据质量维度，并说明处理了哪些问题。'
 const TERMINAL = new Set(['succeeded', 'completed', 'failed', 'cancelled'])
@@ -81,6 +81,7 @@ export default function App() {
   const [history, setHistory] = useState<ChatEntry[]>([])
   const [task, setTask] = useState<Task>()
   const [result, setResult] = useState<TaskResult>()
+  const [analysis, setAnalysis] = useState<AnalysisEnvelope>()
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [rules, setRules] = useState<RuleSet>()
   const [error, setError] = useState('')
@@ -91,9 +92,10 @@ export default function App() {
   const [reportedTaskId, setReportedTaskId] = useState('')
   const streamEnd = useRef<HTMLDivElement>(null)
   const taskId = task ? taskIdOf(task) : undefined
+  const activeTaskId = analysis?.id ?? taskId
   const scores = useMemo(() => scoresOf(result), [result])
   const dispositions = useMemo(() => dispositionsOf(result), [result])
-  const running = submitting || !!task && !TERMINAL.has(task.status)
+  const running = submitting || !!task && !TERMINAL.has(task.status) || !!analysis && !TERMINAL.has(analysis.status)
   const failed = task?.status === 'failed'
   const progress = Math.max(0, Math.min(100, task?.progress == null ? (task?.status === 'succeeded' ? 100 : 0) : task.progress <= 1 ? task.progress * 100 : task.progress))
   const pendingCopy = taskId && task && TERMINAL.has(task.status) ? '正在思考…' : '正在解析并创建任务…'
@@ -122,6 +124,26 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [taskId, task?.status])
   useEffect(() => {
+    if (!analysis || TERMINAL.has(analysis.status)) return
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await api.getAnalysis(analysis.id)
+        setAnalysis(next)
+        if (next.status === 'failed') {
+          setError(next.error ?? '分析任务执行失败')
+          window.clearInterval(timer)
+        } else if (next.status === 'succeeded') {
+          setArtifacts(next.artifacts ?? [])
+          window.clearInterval(timer)
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : '无法获取分析任务状态')
+        window.clearInterval(timer)
+      }
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [analysis?.id, analysis?.status])
+  useEffect(() => {
     if (!taskId || task?.status !== 'succeeded' || !result || reportedTaskId === taskId) return
     setHistory(current => [...current, { role: 'assistant', content: resultSummary(result, dispositions, scores) }])
     setReportedTaskId(taskId)
@@ -131,16 +153,22 @@ export default function App() {
     event.preventDefault()
     const message = prompt.trim()
     if (!message || running) return
-    const currentTaskId = taskId
+    const currentTaskId = activeTaskId
     const keepCurrentTask = !!currentTaskId
     setSubmitting(true); setError(''); setSelection(undefined); setHistory(current => [...current, { role: 'user', content: message }]); setPrompt('')
     if (!keepCurrentTask) {
-      setTask(undefined); setResult(undefined); setArtifacts([])
+      setTask(undefined); setResult(undefined); setAnalysis(undefined); setArtifacts([])
       setReportedTaskId('')
     }
     try {
       const agent = await api.sendMessage(message, currentTaskId)
       setHistory(current => [...current, { role: 'assistant', content: agent.reply }])
+      const analysisData = agent.data as AnalysisEnvelope | null
+      if (analysisData?.task_type) {
+        setAnalysis(analysisData); setTask(undefined); setResult(undefined); setArtifacts(analysisData.artifacts ?? [])
+        setSubmitting(false)
+        return
+      }
       const id = taskIdOf(agent)
       if (!id) return
       const nextTask = await api.getTask(id)
@@ -211,6 +239,7 @@ export default function App() {
             </>}
           </div>
         </section>}
+        {analysis && (analysis.result ? <AnalysisCards analysis={analysis} /> : <AnalysisProgress analysis={analysis} />)}
         <div ref={streamEnd} />
       </div>
 
@@ -228,9 +257,10 @@ export default function App() {
     {panelOpen && <aside className="resource-panel" id="resource-panel" aria-label="任务资源面板">
       <div className="panel-head"><div><span>RESOURCE INDEX</span><h2>任务资源</h2></div><button className="icon-button close-panel" type="button" onClick={() => setPanelOpen(false)} aria-label="关闭资源面板"><Icon name="close" /></button></div>
       <div className="resource-tree" role="tree" aria-label="本次任务资源树">
-        {!task ? <div className="resource-empty"><span><Icon name="folder" /></span><strong>尚无任务资源</strong><p>任务完成后，这里会按图表、结果文件和规则建立资源索引。</p></div> : <>
+        {!task && !analysis ? <div className="resource-empty"><span><Icon name="folder" /></span><strong>尚无任务资源</strong><p>任务完成后，这里会按图表、结果文件和规则建立资源索引。</p></div> : <>
           <TreeFolder label="本次任务" node="task" level={1} open={expanded.has('task')} onToggle={toggle} />
           {expanded.has('task') && <div role="group">
+            {analysis && <TreeItem label={analysis.task_type === 'classification' ? '分类结果与模型指标' : analysis.task_type === 'clustering' ? '用户群体与画像' : '降维坐标与聚类对照'} icon="chart" level={2} active={false} onClick={() => {}} />}
             {scores.length > 0 && <><TreeFolder label="图表" node="charts" level={2} open={expanded.has('charts')} onToggle={toggle} />{expanded.has('charts') && <TreeItem label="清洗前后五维对比" icon="chart" level={3} active={selection?.type === 'scores'} onClick={() => select({ type: 'scores' })} />}</>}
             {artifacts.length > 0 && <><TreeFolder label="结果文件" node="files" level={2} open={expanded.has('files')} onToggle={toggle} />{expanded.has('files') && artifacts.map((artifact, index) => { const href = artifact.download_url ?? artifact.url; return <a className="tree-row tree-link" role="treeitem" aria-level={3} style={{ '--level': 3 } as React.CSSProperties} key={artifact.id ?? `${artifact.name}-${index}`} href={href ? api.resolveUrl(href) : undefined} target={href ? '_blank' : undefined} rel="noreferrer" aria-disabled={!href} title={artifact.name}><span className="tree-spacer" /><Icon name="file" /><span className="tree-name">{artifact.name}</span></a> })}</>}
             {hasReportResources && <><TreeFolder label="规则与报告" node="rules" level={2} open={expanded.has('rules')} onToggle={toggle} />{expanded.has('rules') && <div role="group">
@@ -245,6 +275,36 @@ export default function App() {
     </aside>}
     {!panelOpen && <button className="panel-rail" type="button" onClick={() => setPanelOpen(true)} aria-label="展开资源面板"><Icon name="panel" /><span>资源</span></button>}
   </div>
+}
+
+function metric(value: unknown) { return typeof value === 'number' ? value.toFixed(3) : value == null ? '不可计算' : String(value) }
+function AnalysisProgress({ analysis }: { analysis: AnalysisEnvelope }) {
+  const progress = Math.max(0, Math.min(100, analysis.progress ?? (analysis.status === 'succeeded' ? 100 : 0)))
+  return <section className="analysis-suite analysis-progress" aria-live="polite">
+    <header className="analysis-status"><div><span>ITERATION 02 · ANALYSIS</span><h2>正在执行{analysis.task_type === 'classification' ? '评分分类' : analysis.task_type === 'clustering' ? '用户聚类' : '画像降维'}</h2></div><div className="analysis-badges"><b>{statusText(analysis.status)}</b><span>{analysis.input_data_version}</span></div></header>
+    <p className="stage-copy">{analysis.stage ?? '等待分析 Worker 调度'} · {Math.round(progress)}%</p>
+    <div className="progress-track" aria-label={`分析进度 ${Math.round(progress)}%`}><span style={{ width: `${progress}%` }} /></div>
+  </section>
+}
+function AnalysisCards({ analysis }: { analysis: AnalysisEnvelope }) {
+  const result = analysis.result!
+  return <section className="analysis-suite" aria-label="分析结果">
+    <header className="analysis-status"><div><span>ITERATION 02 · ANALYSIS</span><h2>{result.task_type === 'classification' ? '评分分类预测' : result.task_type === 'clustering' ? '用户画像聚类' : '画像降维与聚类对照'}</h2></div><div className="analysis-badges"><b>{statusText(analysis.status)}</b><span>{analysis.input_data_version}</span><span>{analysis.output_version ?? result.model_version}</span></div></header>
+    <div className="split-note"><b>时间切分</b><span>训练 {result.data_split.samples.train} / 验证 {result.data_split.samples.validation} / 测试 {result.data_split.samples.test}</span><small>T1 {result.data_split.t1} · T2 {result.data_split.t2}</small><p>{result.data_split.leakage_prevention}</p></div>
+    {result.task_type === 'classification' && <div className="analysis-grid">{result.results.map(item => <article className="analysis-card" key={item.algorithm}><span>CLASSIFIER</span><h3>{String(item.algorithm).replaceAll('_', ' ')}</h3><div className="prediction"><strong>{item.prediction_label}</strong><b>{(item.positive_probability * 100).toFixed(1)}%</b><small>高分概率</small></div><MetricRows values={item.test_metrics} /><p>用户 {result.user_id} · 电影 {result.movie_id} · 测试集指标</p></article>)}</div>}
+    {result.task_type === 'clustering' && <div className="analysis-grid">{result.results.map(item => <article className="analysis-card" key={item.algorithm}><span>CLUSTERING</span><h3>{String(item.algorithm).toUpperCase()}</h3>{item.selected_user ? <><div className="prediction"><strong>群体 {item.selected_user.cluster_id}</strong><b>{item.selected_user.cluster_summary.size}</b><small>群体人数</small></div><p>{item.selected_user.cluster_summary.description} · 偏好 {item.selected_user.cluster_summary.top_genres.join('、') || '无类型数据'}</p></> : <p>已分析 {result.profile_count} 个训练期用户画像。</p>}<MetricRows values={item.metrics} /></article>)}</div>}
+    {result.task_type === 'dimensionality_reduction' && <div className="analysis-grid reduction-grid">{result.results.map(item => <article className="analysis-card" key={item.algorithm}><span>REDUCTION</span><h3>{String(item.algorithm).toUpperCase()}</h3><div className="prediction"><strong>{item.original_dimension} → {item.reduced_dimension} 维</strong><b>{(item.total_information_retained * 100).toFixed(1)}%</b><small>信息保留率</small></div><Scatter points={item.coordinates} /><div className="comparison"><div><small>原始轮廓系数</small><b>{metric(item.clustering_comparison.before.silhouette_score)}</b></div><div><small>降维后轮廓系数</small><b>{metric(item.clustering_comparison.after.silhouette_score)}</b></div><div><small>拟合耗时</small><b>{metric(item.fit_time_ms)} ms</b></div></div></article>)}</div>}
+    {!!result.limitations?.length && <div className="analysis-limit"><b>适用限制</b>{result.limitations.map(item => <p key={item}>{item}</p>)}</div>}
+  </section>
+}
+function MetricRows({ values }: { values: Record<string, unknown> }) {
+  return <div className="metric-rows">{Object.entries(values).map(([key, value]) => <div key={key}><span>{key.replaceAll('_', ' ')}</span><b>{metric(value)}</b></div>)}</div>
+}
+function Scatter({ points }: { points: Array<{ x: number; y: number; cluster_id: number }> }) {
+  if (!points.length) return null
+  const xs = points.map(point => point.x), ys = points.map(point => point.y)
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
+  return <svg className="scatter" viewBox="0 0 320 180" role="img" aria-label="用户群体二维散点图">{points.map((point, index) => { const x = 12 + (point.x - minX) / Math.max(1e-9, maxX - minX) * 296; const y = 168 - (point.y - minY) / Math.max(1e-9, maxY - minY) * 156; return <circle key={index} cx={x} cy={y} r="3.2" className={`cluster-${Math.abs(point.cluster_id) % 6}`} /> })}</svg>
 }
 
 function TreeFolder({ label, node, level, open, onToggle }: { label: string; node: string; level: number; open: boolean; onToggle: (node: string) => void }) {

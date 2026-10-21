@@ -53,6 +53,34 @@ svg { width: 19px; height: 19px; flex: 0 0 auto; }
 .error-message { padding: 16px 18px; border-left: 3px solid var(--danger); background: #fff3ee; color: #713321; }
 .error-message p { margin: 4px 0; }
 .error-message button { margin-top: 6px; padding: 0; border: 0; border-bottom: 1px solid; color: inherit; background: transparent; cursor: pointer; font-size: 11px; }
+.analysis-suite { margin: 8px 0 42px 45px; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: #f5f7f3; box-shadow: 0 10px 30px rgba(32,55,45,.06); }
+.analysis-status { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.analysis-status span, .analysis-card > span { color: #78867f; font-size: 8px; font-weight: 700; letter-spacing: .14em; }
+.analysis-status h2 { margin: 5px 0 0; font: 600 21px "Noto Serif SC", serif; }
+.analysis-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.analysis-badges > * { padding: 5px 8px; border-radius: 5px; color: var(--green-dark); background: #e1eae1; font-size: 9px; font-weight: 600; }
+.split-note { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 16px 0; color: #5e6964; font-size: 10px; }
+.split-note b { grid-row: 1 / 3; color: var(--ink); }
+.split-note small { color: #87908c; }
+.split-note p { grid-column: 1 / -1; margin: 6px 0 0; }
+.analysis-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.analysis-card { min-width: 0; padding: 17px; border: 1px solid #dbe1db; border-radius: 10px; background: white; }
+.analysis-card h3 { margin: 4px 0 15px; font-size: 15px; text-transform: capitalize; }
+.analysis-card > p { color: #69736e; font-size: 10px; line-height: 1.55; }
+.prediction { display: grid; grid-template-columns: 1fr auto; align-items: end; margin-bottom: 14px; }
+.prediction strong { color: var(--green-dark); font: 600 17px "Noto Serif SC", serif; }
+.prediction b { color: var(--green); font-size: 22px; font-variant-numeric: tabular-nums; }
+.prediction small { grid-column: 2; color: var(--muted); font-size: 8px; text-align: right; }
+.metric-rows { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); }
+.metric-rows div { display: flex; justify-content: space-between; gap: 8px; padding: 7px; background: #f8faf7; font-size: 9px; }
+.metric-rows span { color: #738079; text-transform: capitalize; }
+.scatter { width: 100%; height: 180px; margin: 3px 0 12px; border: 1px solid var(--line); background: linear-gradient(#edf1ec 1px, transparent 1px), linear-gradient(90deg, #edf1ec 1px, transparent 1px); background-size: 32px 30px; }
+.scatter circle { fill: #386956; opacity: .75; }.scatter .cluster-1 { fill: #be734c; }.scatter .cluster-2 { fill: #7d6ea8; }.scatter .cluster-3 { fill: #c4a33d; }.scatter .cluster-4 { fill: #4f83a2; }.scatter .cluster-5 { fill: #9a5971; }
+.comparison { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.comparison div { display: flex; flex-direction: column; gap: 4px; padding: 8px; background: #f1f4ef; }
+.comparison small { color: var(--muted); font-size: 8px; }.comparison b { font-size: 10px; }
+.analysis-limit { margin-top: 12px; padding: 12px 14px; border-left: 3px solid #b88b45; background: #fff9ec; color: #66583f; font-size: 10px; }
+.analysis-limit p { margin: 5px 0 0; }
 .result-message { padding-top: 5px; }
 .delta-summary { display: flex; flex-wrap: wrap; gap: 7px; margin: 18px 0; }
 .delta-summary span { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 11px; }
@@ -150,5 +178,9 @@ svg { width: 19px; height: 19px; flex: 0 0 auto; }
   .user-message { margin-left: 38px; }
   .composer-wrap { padding: 16px 10px 14px; }
   .composer { border-radius: 13px; }
+  .analysis-suite { margin-left: 38px; padding: 14px; }
+  .analysis-grid { grid-template-columns: 1fr; }
+  .analysis-status { flex-direction: column; }
+  .analysis-badges { justify-content: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

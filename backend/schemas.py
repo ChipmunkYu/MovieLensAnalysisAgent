@@ -37,6 +37,33 @@ class AgentMessage(BaseModel):
     executor: Literal["local", "hadoop"] | None = None
 
 
+class AnalysisRequest(BaseModel):
+    input_path: str = Field(default_factory=default_input_path, min_length=1)
+    user_id: int | None = Field(default=None, gt=0)
+    movie_id: int | None = Field(default=None, gt=0)
+    algorithm: str | None = None
+    n_clusters: int = Field(default=5, ge=2, le=20)
+    dimensions: int = Field(default=2, ge=2, le=20)
+
+
+class AnalysisTaskView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    task_type: str
+    status: TaskStatus
+    stage: str | None
+    progress: int
+    input_path: str
+    input_data_version: str
+    output_version: str | None
+    parameters: dict | None
+    result: dict | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
 class AgentReply(BaseModel):
     reply: str
     task_id: str | None = None

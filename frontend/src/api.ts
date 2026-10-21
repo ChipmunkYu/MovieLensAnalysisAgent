@@ -1,4 +1,4 @@
-import type { AgentMessageResponse, Artifact, RuleSet, Task, TaskResult } from './types'
+import type { AgentMessageResponse, AnalysisEnvelope, Artifact, RuleSet, Task, TaskResult } from './types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 
@@ -38,5 +38,9 @@ export const api = {
     const data = await request<RuleSet | RuleSet['rules']>('/api/rules/default')
     return Array.isArray(data) ? { rules: data } : data
   },
+  runClassification: (payload: unknown) => request<AnalysisEnvelope>('/api/analysis/classification', { method: 'POST', body: JSON.stringify(payload) }),
+  runClustering: (payload: unknown) => request<AnalysisEnvelope>('/api/analysis/clustering', { method: 'POST', body: JSON.stringify(payload) }),
+  runReduction: (payload: unknown) => request<AnalysisEnvelope>('/api/analysis/reduction', { method: 'POST', body: JSON.stringify(payload) }),
+  getAnalysis: (id: string) => request<AnalysisEnvelope>(`/api/analysis/${encodeURIComponent(id)}`),
   resolveUrl: (url: string) => /^https?:\/\//.test(url) ? url : `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`,
 }

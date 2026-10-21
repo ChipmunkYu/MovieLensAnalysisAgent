@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session
 
 from backend.agent import route
 from backend.db import get_db, init_db
-from backend.models import Task, TaskStatus
+from backend.models import AnalysisTask, Task, TaskStatus
 from backend.config import artifact_dir
 from backend.rules import public_rules
-from backend.schemas import AgentMessage, AgentReply, ArtifactList, TaskCreate, TaskResult, TaskView
+from backend.schemas import AgentMessage, AgentReply, AnalysisRequest, AnalysisTaskView, ArtifactList, TaskCreate, TaskResult, TaskView
 from backend.service import create_task
+from backend.analysis.service import create_analysis_task
 
 
 @asynccontextmanager
@@ -90,6 +91,43 @@ def download_artifact(task_id: str, name: str, session: Session = Depends(get_db
 @app.get("/api/rules/default")
 def get_default_rules():
     return public_rules()
+
+
+@app.post("/api/analysis/classification", response_model=AnalysisTaskView, status_code=201)
+def post_classification(body: AnalysisRequest, session: Session = Depends(get_db)):
+    return create_analysis_task(session, "classification", body.input_path, body.model_dump(exclude={"input_path"}, exclude_none=True))
+
+
+@app.post("/api/analysis/clustering", response_model=AnalysisTaskView, status_code=201)
+def post_clustering(body: AnalysisRequest, session: Session = Depends(get_db)):
+    return create_analysis_task(session, "clustering", body.input_path, body.model_dump(exclude={"input_path"}, exclude_none=True))
+
+
+@app.post("/api/analysis/reduction", response_model=AnalysisTaskView, status_code=201)
+def post_reduction(body: AnalysisRequest, session: Session = Depends(get_db)):
+    return create_analysis_task(session, "dimensionality_reduction", body.input_path, body.model_dump(exclude={"input_path"}, exclude_none=True))
+
+
+@app.get("/api/analysis/{task_id}", response_model=AnalysisTaskView)
+def get_analysis(task_id: str, session: Session = Depends(get_db)):
+    task = session.get(AnalysisTask, task_id)
+    if not task:
+        raise HTTPException(404, "analysis task not found")
+    return task
+
+
+@app.get("/api/analysis/{task_id}/artifacts/{name}")
+def download_analysis_artifact(task_id: str, name: str, session: Session = Depends(get_db)):
+    task = session.get(AnalysisTask, task_id)
+    if not task or task.status != TaskStatus.SUCCESS:
+        raise HTTPException(404, "analysis artifact not found")
+    item = next((value for value in task.artifacts or [] if value.get("name") == name), None)
+    if not item:
+        raise HTTPException(404, "analysis artifact not found")
+    allowed, path = (artifact_dir() / "analysis" / task.id).resolve(), Path(item["path"]).resolve()
+    if allowed not in path.parents or not path.is_file():
+        raise HTTPException(404, "analysis artifact not found")
+    return FileResponse(path, filename=name)
 
 
 @app.post("/api/agent/messages", response_model=AgentReply)

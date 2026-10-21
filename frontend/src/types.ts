@@ -6,6 +6,33 @@ export interface AgentMessageResponse {
   data: Record<string, unknown> | unknown[] | null
 }
 
+export interface AnalysisEnvelope {
+  id: string
+  task_type: 'classification' | 'clustering' | 'dimensionality_reduction'
+  status: TaskStatus
+  stage?: string
+  progress?: number
+  input_data_version?: string
+  output_version?: string
+  error?: string
+  parameters?: Record<string, unknown>
+  result?: AnalysisResult
+  artifacts?: Artifact[]
+}
+
+export interface AnalysisResult {
+  task_type: AnalysisEnvelope['task_type']
+  model_version: string
+  profile_version?: string
+  user_id?: number
+  movie_id?: number
+  feature_schema?: string[]
+  profile_count?: number
+  results: Array<Record<string, any>>
+  data_split: { t1: string; t2: string; boundary_source: string; samples: Record<string, number>; leakage_prevention: string }
+  limitations?: string[]
+}
+
 export interface Task {
   id?: string
   task_id?: string

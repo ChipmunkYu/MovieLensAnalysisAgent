@@ -20,6 +20,15 @@ STAGE_PROGRESS = {
     "publish": 100,
 }
 
+ANALYSIS_STAGE_PROGRESS = {
+    "loading_data": 10,
+    "splitting_data": 25,
+    "building_features": 45,
+    "training": 70,
+    "evaluating": 88,
+    "publishing": 100,
+}
+
 
 class TaskStatus(str, enum.Enum):
     QUEUED = "queued"
@@ -53,3 +62,28 @@ class Task(Base):
         if self.status == TaskStatus.SUCCESS:
             return 100
         return STAGE_PROGRESS.get(self.stage or "", 0)
+
+
+class AnalysisTask(Base):
+    __tablename__ = "analysis_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_type: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.QUEUED, index=True)
+    stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    input_path: Mapped[str] = mapped_column(Text)
+    input_data_version: Mapped[str] = mapped_column(String(64))
+    output_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parameters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    artifacts: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def progress(self) -> int:
+        if self.status == TaskStatus.SUCCESS:
+            return 100
+        return ANALYSIS_STAGE_PROGRESS.get(self.stage or "", 0)

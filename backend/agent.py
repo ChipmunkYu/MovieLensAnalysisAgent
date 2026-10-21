@@ -7,11 +7,12 @@ import re
 import httpx
 from sqlalchemy.orm import Session
 
-from backend.models import Task
+from backend.models import AnalysisTask, Task
 from backend.config import default_executor, default_input_path
 from backend.rules import load_rules
 from backend.schemas import AgentMessage
 from backend.service import create_task
+from backend.analysis.service import create_analysis_task
 
 TASK_ID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b")
 CREATE_HINTS = ("重新清洗", "再清洗", "重新跑", "重新执行", "再跑", "新任务", "重新创建", "再次执行")
@@ -49,12 +50,55 @@ def call_tool(session: Session, name: str, args: dict) -> dict | list:
         return {"id": task.id, "status": task.status.value, "result": task.result, "error": task.error}
     if name == "get_rules":
         return load_rules()
+    analysis_types = {
+        "predict_rating_class": "classification",
+        "run_user_clustering": "clustering",
+        "run_dimensionality_reduction": "dimensionality_reduction",
+        "compare_clustering_before_after_reduction": "dimensionality_reduction",
+    }
+    if name in analysis_types:
+        task = create_analysis_task(session, analysis_types[name], args.pop("input_path", None) or default_input_path(), args)
+        return {"id": task.id, "task_type": task.task_type, "status": task.status.value, "stage": task.stage,
+                "input_data_version": task.input_data_version, "output_version": task.output_version,
+                "parameters": task.parameters, "result": task.result, "progress": task.progress,
+                "artifacts": [{"name": item["name"], "size": item["size"], "download_url": f"/api/analysis/{task.id}/artifacts/{item['name']}"} for item in task.artifacts or []]}
     raise ValueError(f"unknown tool: {name}")
 
 
 def is_create_request(message: str) -> bool:
     text = message.lower()
     return any(word in text for word in CREATE_HINTS)
+
+
+def is_analysis_request(message: str) -> bool:
+    text = message.lower()
+    if any(word in text for word in ("为什么", "依据", "限制", "多少信息", "结果使用", "当前")):
+        return False
+    has_ids = re.search(r"用户\s*(?:id\s*)?[：:#]?\s*\d+", text, re.I) and re.search(r"电影\s*(?:id\s*)?[：:#]?\s*\d+", text, re.I)
+    return bool((has_ids and any(word in text for word in ("预测", "高分", "评分类别", "喜欢"))) or "聚类" in text or any(word in text for word in ("降维", "pca", "svd")))
+
+
+def analysis_followup(task: AnalysisTask, message: str) -> tuple[str, dict]:
+    result = task.result or {}; text = message.lower()
+    data = {"id": task.id, "task_type": task.task_type, "status": task.status.value, "input_data_version": task.input_data_version, "output_version": task.output_version, "result": result}
+    if task.status.value != "succeeded":
+        return f"分析任务状态为 {task.status.value}。{task.error or ''}", data
+    if task.task_type == "dimensionality_reduction" and any(word in text for word in ("信息", "保留", "效果", "变差", "为什么")):
+        parts = []
+        for item in result.get("results", []):
+            comparison = item["clustering_comparison"]
+            parts.append(f"{item['algorithm'].upper()} 保留 {item['total_information_retained']:.1%} 信息，轮廓系数由 {comparison['before']['silhouette_score']} 变为 {comparison['after']['silhouette_score']}")
+        return "；".join(parts) + "。二维压缩会舍弃部分方差，因此可视化更直观，但群体边界可能变弱。", data
+    if task.task_type == "clustering" and any(word in text for word in ("为什么", "群体", "特点", "依据")):
+        selected = next((item.get("selected_user") for item in result.get("results", []) if item.get("selected_user")), None)
+        if selected:
+            profile, summary = selected["profile"], selected["cluster_summary"]
+            return f"该判断依据训练期画像：评分 {profile['rating_count']} 次，均分 {profile['average_rating']}，高分比例 {profile['high_rating_ratio']}。所在群体共 {summary['size']} 人，特征是{summary['description']}。", data
+    if task.task_type == "classification" and any(word in text for word in ("概率", "依据", "为什么", "指标")):
+        features = "、".join(result.get("feature_schema", []))
+        return f"概率由训练期之前的用户与电影历史特征计算，包括{features}。测试集指标随结果一并返回；这是预测相关性，不是因果结论。", data
+    limitations = "；".join(result.get("limitations") or [])
+    return f"该结果使用 {task.input_data_version}，输出版本为 {task.output_version}。{limitations}", data
 
 
 def model_configured() -> bool:
@@ -224,6 +268,34 @@ def choose_executor(request: AgentMessage, text: str) -> str:
 
 def deterministic(session: Session, request: AgentMessage) -> tuple[str, dict | list]:
     text = request.message.lower()
+    user_match = re.search(r"用户\s*(?:id\s*)?[：:#]?\s*(\d+)", text, re.I)
+    movie_match = re.search(r"电影\s*(?:id\s*)?[：:#]?\s*(\d+)", text, re.I)
+    algorithm = None
+    for token, value in (("logistic", "logistic_regression"), ("逻辑回归", "logistic_regression"), ("random forest", "random_forest"), ("随机森林", "random_forest"), ("dbscan", "dbscan"), ("k-means", "kmeans"), ("kmeans", "kmeans"), ("pca", "pca"), ("svd", "svd")):
+        if token in text:
+            algorithm = value; break
+    common = {"input_path": request.input_path or default_input_path(), "algorithm": algorithm}
+    if any(word in text for word in ("降维", "pca", "svd", "信息保留")):
+        data = call_tool(session, "run_dimensionality_reduction", common | {"n_clusters": 5, "dimensions": 2})
+        if not data.get("result"):
+            return "降维分析任务已创建，Worker 完成后可查看二维坐标和聚类对照。", data
+        result = data["result"]; first = result["results"][0]
+        return f"降维分析已完成：{first['algorithm'].upper()} 将 {first['original_dimension']} 维画像压缩到 {first['reduced_dimension']} 维，信息保留率为 {first['total_information_retained']:.1%}。", data
+    if any(word in text for word in ("聚类", "群体", "哪一类", "用户群")):
+        data = call_tool(session, "run_user_clustering", common | {"user_id": int(user_match.group(1)) if user_match else None, "n_clusters": 5})
+        if not data.get("result"):
+            return "用户聚类任务已创建，Worker 完成后可查看群体归属和群体摘要。", data
+        selected = data["result"]["results"][0].get("selected_user")
+        reply = "用户聚类已完成，已生成群体指标与可解释摘要。"
+        if selected: reply = f"用户 {selected['user_id']} 属于群体 {selected['cluster_id']}：{selected['cluster_summary']['description']}。"
+        return reply, data
+    if any(word in text for word in ("预测", "高分", "评分类别", "喜欢")):
+        data = call_tool(session, "predict_rating_class", common | {"user_id": int(user_match.group(1)) if user_match else None, "movie_id": int(movie_match.group(1)) if movie_match else None})
+        if not data.get("result"):
+            return "评分分类任务已创建，Worker 完成后可查看预测类别和高分概率。", data
+        values = data["result"]["results"]
+        reply = "；".join(f"{item['algorithm']} 预测为{item['prediction_label']}，高分概率 {item['positive_probability']:.1%}" for item in values) + "。"
+        return reply, data
     match = TASK_ID.search(request.message)
     if match and ("结果" in text or "result" in text):
         data = call_tool(session, "get_result", {"task_id": match.group()})
@@ -255,6 +327,9 @@ def model_route(session: Session, request: AgentMessage) -> tuple[str, dict | li
         "get_task": ("查询任务状态", {"task_id": {"type": "string"}}, ["task_id"]),
         "get_result": ("查询任务结果", {"task_id": {"type": "string"}}, ["task_id"]),
         "get_rules": ("查询默认规则", {}, []),
+        "predict_rating_class": ("预测用户是否会给电影打出不低于4分的评分", {"user_id": {"type": "integer"}, "movie_id": {"type": "integer"}, "algorithm": {"type": "string"}, "input_path": {"type": "string"}}, ["user_id", "movie_id"]),
+        "run_user_clustering": ("构建用户画像并执行用户聚类", {"user_id": {"type": "integer"}, "algorithm": {"type": "string"}, "n_clusters": {"type": "integer"}, "input_path": {"type": "string"}}, []),
+        "run_dimensionality_reduction": ("把用户画像降维并比较聚类效果", {"algorithm": {"type": "string"}, "dimensions": {"type": "integer"}, "n_clusters": {"type": "integer"}, "input_path": {"type": "string"}}, []),
     }
     for name, (description, properties, required) in specs.items():
         tools.append({"type": "function", "function": {"name": name, "description": description, "parameters": {"type": "object", "properties": properties, "required": required}}})
@@ -301,7 +376,10 @@ def model_route(session: Session, request: AgentMessage) -> tuple[str, dict | li
 
 
 def route(session: Session, request: AgentMessage) -> tuple[str, dict | list]:
-    if request.task_id and not is_create_request(request.message):
+    if request.task_id and not is_create_request(request.message) and not is_analysis_request(request.message):
+        analysis = session.get(AnalysisTask, request.task_id)
+        if analysis:
+            return analysis_followup(analysis, request.message)
         task = _task(session, request.task_id)
         return followup_reply(task, request.message)
     try:

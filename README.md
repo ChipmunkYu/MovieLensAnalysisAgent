@@ -1,6 +1,28 @@
 # MovieLens Analysis Agent
 
-MovieLens `ratings.dat` 清洗、五维数据质量评分和结果下载。后端为 FastAPI，前端为 React，清洗与评分可跑在本地进程或真实 Hadoop 集群上。
+MovieLens `ratings.dat` 清洗、五维数据质量评分，以及基于清洗数据的评分分类、用户画像聚类和降维分析。后端为 FastAPI，前端为 React；清洗可运行在本地进程或真实 Hadoop 集群上，分析结果会版本化持久保存。
+
+## 迭代二分析能力
+
+- 分类：Logistic Regression 与 Random Forest，对 `rating >= 4` 进行预测，返回概率及验证/测试指标。
+- 聚类：训练期用户画像、K-Means 与 DBSCAN、噪声点、群体摘要及三类聚类指标。
+- 降维：PCA 与 SVD、二维坐标、信息保留率、资源开销和降维前后 K-Means 指标对照。
+- Agent：可直接询问“预测用户 1 是否会喜欢电影 10”“用户 1 属于哪个群体”“比较降维前后的聚类效果”。
+- 数据治理：分类特征仅使用评分事件之前的历史；画像、聚类与降维只使用训练期数据。`T1/T2` 未配置时按时间顺序的 60%/80% 分位点切分，边界来源和样本量会写入结果。
+
+分析 API：
+
+```text
+POST /api/analysis/classification
+POST /api/analysis/clustering
+POST /api/analysis/reduction
+GET  /api/analysis/{task_id}
+GET  /api/analysis/{task_id}/artifacts/{name}
+```
+
+三个分析 POST 接口会立即创建 `queued` 任务并返回任务 ID，不会在 HTTP 请求中同步训练。需要保持 `movielens-worker` 运行；前端会轮询分析任务，直到显示结果或失败原因。
+
+建议把迭代一生成的 `ratings-cleaned.dat` 作为 `input_path`。若同目录存在 MovieLens `movies.dat`，用户画像会自动加入电影类型偏好；缺失时结果会明确标注这一限制，不会生成虚假类型。
 
 ## 本地运行
 
@@ -11,7 +33,7 @@ python -m pip install -e ".[test]"
 Copy-Item .env.example .env
 ```
 
-分别启动 API、Worker 和前端：
+分别启动 API、Worker 和前端。Worker 同时处理清洗任务和分析任务：
 
 ```powershell
 uvicorn backend.main:app --reload
