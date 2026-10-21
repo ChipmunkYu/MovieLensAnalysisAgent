@@ -32,15 +32,22 @@ def build_profiles(dataset: Dataset) -> tuple[list[int], list[str], np.ndarray, 
 
 
 def event_features(ratings: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    users: dict[int, list[float]] = defaultdict(list); movies: dict[int, list[float]] = defaultdict(list)
+    # 增量维护每个用户/电影的统计量，避免对每条评分都重算整个历史列表的 mean/std（原实现是 O(n^2)）。
+    # 每个用户/电影存 [count, sum, sum_of_squares, high_count]，均值和标准差按公式在线计算。
+    user_stats: dict[int, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
+    movie_stats: dict[int, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
     features, labels, identities = [], [], []
     for user_raw, movie_raw, rating, timestamp in ratings:
         user, movie = int(user_raw), int(movie_raw)
-        uh, mh = users[user], movies[movie]
-        if uh and mh:
-            features.append([len(uh), np.mean(uh), np.std(uh), np.mean(np.asarray(uh) >= 4), len(mh), np.mean(mh), np.mean(np.asarray(mh) >= 4)])
+        us, ms = user_stats[user], movie_stats[movie]
+        if us[0] and ms[0]:
+            u_mean = us[1] / us[0]
+            u_std = max(0.0, us[2] / us[0] - u_mean * u_mean) ** 0.5
+            features.append([us[0], u_mean, u_std, us[3] / us[0], ms[0], ms[1] / ms[0], ms[3] / ms[0]])
             labels.append(int(rating >= 4)); identities.append([user, movie, int(timestamp)])
-        uh.append(float(rating)); mh.append(float(rating))
+        value = float(rating)
+        us[0] += 1; us[1] += value; us[2] += value * value; us[3] += int(rating >= 4)
+        ms[0] += 1; ms[1] += value; ms[2] += value * value; ms[3] += int(rating >= 4)
     return np.asarray(features, dtype=float), np.asarray(labels, dtype=int), np.asarray(identities, dtype=int)
 
 
