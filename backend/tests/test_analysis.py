@@ -46,7 +46,7 @@ def test_classification_agent_runs_two_real_models(analysis_flow):
         work_analysis_once(session)
     result = client.get(f"/api/analysis/{body['task_id']}").json()["result"]
     assert result["task_type"] == "classification"
-    assert {item["algorithm"] for item in result["results"]} == {"logistic_regression", "random_forest"}
+    assert {item["algorithm"] for item in result["results"]} == {"logistic_regression", "decision_tree"}
     assert all(0 <= item["positive_probability"] <= 1 for item in result["results"])
     assert all("f1" in item["test_metrics"] for item in result["results"])
     assert all(item["model_state"] for item in result["results"])

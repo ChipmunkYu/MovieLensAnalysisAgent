@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models import AnalysisTask, Task
-from backend.config import default_executor, default_input_path
+from backend.models import AnalysisTask, Task, TaskStatus
+from backend.config import data_dir, data_version, default_executor, default_input_path
 from backend.rules import load_rules
 from backend.schemas import AgentMessage
 from backend.service import create_task
@@ -34,6 +36,37 @@ def _task(session: Session, task_id: str) -> Task:
     return task
 
 
+def latest_clean_input(session: Session) -> str | None:
+    # D4：分析只消费“已成功发布”的清洗产物。取最近一次成功、且 output_data_version 与
+    # 当前 DATA_VERSION 匹配的清洗任务，返回其 ratings-cleaned.dat（相对 data_dir 的路径）。
+    # 用版本匹配剔除基于旧数据集跑出的历史任务，避免分析误用过期/损坏的清洗结果。
+    expected = f"{data_version()}-clean"
+    root = data_dir()
+    tasks = session.scalars(
+        select(Task).where(Task.status == TaskStatus.SUCCESS).order_by(Task.finished_at.desc()).limit(8)
+    ).all()
+    for task in tasks:
+        if (task.result or {}).get("output_data_version") != expected:
+            continue
+        for item in task.artifacts or []:
+            if item.get("name") != "ratings-cleaned.dat":
+                continue
+            path = Path(item.get("path", ""))
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            try:
+                return str(resolved.relative_to(root))
+            except ValueError:
+                return str(resolved)
+    return None
+
+
+def resolve_analysis_input(session: Session, explicit: str | None) -> str:
+    # 分析输入优先级：显式指定 > 最近一次成功清洗产物 > 默认输入。
+    return explicit or latest_clean_input(session) or default_input_path()
+
+
 def call_tool(session: Session, name: str, args: dict) -> dict | list:
     if name == "create_task":
         task = create_task(
@@ -57,7 +90,7 @@ def call_tool(session: Session, name: str, args: dict) -> dict | list:
         "compare_clustering_before_after_reduction": "dimensionality_reduction",
     }
     if name in analysis_types:
-        task = create_analysis_task(session, analysis_types[name], args.pop("input_path", None) or default_input_path(), args)
+        task = create_analysis_task(session, analysis_types[name], resolve_analysis_input(session, args.pop("input_path", None)), args)
         return {"id": task.id, "task_type": task.task_type, "status": task.status.value, "stage": task.stage,
                 "input_data_version": task.input_data_version, "output_version": task.output_version,
                 "parameters": task.parameters, "result": task.result, "progress": task.progress,
@@ -75,7 +108,7 @@ def is_analysis_request(message: str) -> bool:
     if any(word in text for word in ("为什么", "依据", "限制", "多少信息", "结果使用", "当前")):
         return False
     has_ids = re.search(r"用户\s*(?:id\s*)?[：:#]?\s*\d+", text, re.I) and re.search(r"电影\s*(?:id\s*)?[：:#]?\s*\d+", text, re.I)
-    return bool((has_ids and any(word in text for word in ("预测", "高分", "评分类别", "喜欢"))) or "聚类" in text or any(word in text for word in ("降维", "pca", "svd")))
+    return bool((has_ids and any(word in text for word in ("预测", "高分", "评分类别", "喜欢"))) or any(word in text for word in ("聚类", "群体", "哪一类", "用户群")) or any(word in text for word in ("降维", "pca", "svd")))
 
 
 def analysis_followup(task: AnalysisTask, message: str) -> tuple[str, dict]:
@@ -271,10 +304,10 @@ def deterministic(session: Session, request: AgentMessage) -> tuple[str, dict | 
     user_match = re.search(r"用户\s*(?:id\s*)?[：:#]?\s*(\d+)", text, re.I)
     movie_match = re.search(r"电影\s*(?:id\s*)?[：:#]?\s*(\d+)", text, re.I)
     algorithm = None
-    for token, value in (("logistic", "logistic_regression"), ("逻辑回归", "logistic_regression"), ("random forest", "random_forest"), ("随机森林", "random_forest"), ("dbscan", "dbscan"), ("k-means", "kmeans"), ("kmeans", "kmeans"), ("pca", "pca"), ("svd", "svd")):
+    for token, value in (("logistic", "logistic_regression"), ("逻辑回归", "logistic_regression"), ("decision tree", "decision_tree"), ("决策树", "decision_tree"), ("dbscan", "dbscan"), ("k-means", "kmeans"), ("kmeans", "kmeans"), ("pca", "pca"), ("svd", "svd")):
         if token in text:
             algorithm = value; break
-    common = {"input_path": request.input_path or default_input_path(), "algorithm": algorithm}
+    common = {"input_path": resolve_analysis_input(session, request.input_path), "algorithm": algorithm}
     if any(word in text for word in ("降维", "pca", "svd", "信息保留")):
         data = call_tool(session, "run_dimensionality_reduction", common | {"n_clusters": 5, "dimensions": 2})
         if not data.get("result"):
@@ -322,10 +355,10 @@ def deterministic(session: Session, request: AgentMessage) -> tuple[str, dict | 
 def model_route(session: Session, request: AgentMessage) -> tuple[str, dict | list]:
     base_url = os.environ["MODEL_BASE_URL"].rstrip("/")
     tools = []
+    # get_task/get_result 只在 route 上方的 task_id 分支和 deterministic 的 TASK_ID 分支用到，
+    # 模型路由不需要它们：把这两个工具暴露给模型反而会让它用编造的 task_id 反复调用 get。
     specs = {
         "create_task": ("创建默认清洗和评分任务", {"input_path": {"type": "string"}, "executor": {"type": "string", "enum": ["local", "hadoop"]}}, []),
-        "get_task": ("查询任务状态", {"task_id": {"type": "string"}}, ["task_id"]),
-        "get_result": ("查询任务结果", {"task_id": {"type": "string"}}, ["task_id"]),
         "get_rules": ("查询默认规则", {}, []),
         "predict_rating_class": ("预测用户是否会给电影打出不低于4分的评分", {"user_id": {"type": "integer"}, "movie_id": {"type": "integer"}, "algorithm": {"type": "string"}, "input_path": {"type": "string"}}, ["user_id", "movie_id"]),
         "run_user_clustering": ("构建用户画像并执行用户聚类", {"user_id": {"type": "integer"}, "algorithm": {"type": "string"}, "n_clusters": {"type": "integer"}, "input_path": {"type": "string"}}, []),
