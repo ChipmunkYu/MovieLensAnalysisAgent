@@ -47,6 +47,8 @@ def execute_analysis(session: Session, task: AnalysisTask) -> AnalysisTask:
         output = artifact_dir() / "analysis" / task.id; output.mkdir(parents=True, exist_ok=True)
         _, _, _, profiles = build_profiles(dataset)
         artifacts = [_write_json(output / "result.json", result), _write_json(output / "user-profiles.json", {"profile_version": "user-profile-v2", "source_data_version": task.input_data_version, "time_boundary": result["data_split"], "profiles": profiles})]
+        for artifact in artifacts:
+            artifact["download_url"] = f"/api/analysis/{task.id}/artifacts/{artifact['name']}"
         task.result, task.artifacts = result, artifacts
         task.output_version = result["model_version"]
         task.status, task.stage = TaskStatus.SUCCESS, "publishing"
