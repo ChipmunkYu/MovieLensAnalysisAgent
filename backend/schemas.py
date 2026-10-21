@@ -58,6 +58,7 @@ class AnalysisTaskView(BaseModel):
     output_version: str | None
     parameters: dict | None
     result: dict | None
+    artifacts: list | None = None
     error: str | None
     created_at: datetime
     started_at: datetime | None

@@ -67,6 +67,7 @@ def test_clustering_profiles_are_persisted(analysis_flow):
     task_id = body["id"]
     task = client.get(f"/api/analysis/{task_id}").json()
     assert task["output_version"] == "clustering-v2"
+    assert {item["name"] for item in task["artifacts"]} == {"result.json", "user-profiles.json"}
     assert client.get(f"/api/analysis/{task_id}/artifacts/user-profiles.json").status_code == 200
 
 
