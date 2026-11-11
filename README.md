@@ -22,7 +22,9 @@ GET  /api/analysis/{task_id}/artifacts/{name}
 
 三个分析 POST 接口会立即创建 `queued` 任务并返回任务 ID，不会在 HTTP 请求中同步训练。需要保持 `movielens-worker` 运行；前端会轮询分析任务，直到显示结果或失败原因。
 
-建议把迭代一生成的 `ratings-cleaned.dat` 作为 `input_path`。若同目录存在 MovieLens `movies.dat`，用户画像会自动加入电影类型偏好；缺失时结果会明确标注这一限制，不会生成虚假类型。
+建议把迭代一生成的 `ratings-cleaned.dat` 作为 `input_path`。若原始评分文件同目录存在 MovieLens `movies.dat`，用户画像会自动加入电影类型偏好；清洗产物会追溯原始输入目录。缺失时结果会明确标注这一限制，不会生成虚假类型。
+
+Agent 优先选择最近 8 个成功清洗任务中通过来源校验的当前版本产物。分析 Worker 只额外接受数据库登记、版本匹配且位于该清洗任务精确目录的 `ratings-cleaned.dat`，不整体开放 `ARTIFACT_DIR`（即使它位于 `DATA_DIR` 内）。清洗评分来自产物，年龄/电影类型从原清洗任务的原始评分文件同目录读取，并校验真实路径；原始评分文件丢失或元数据链接越界会明确失败。原始输入仍限于 `DATA_DIR`，文件名包含 `clean` 不代表清洗版本；旧任务的绝对产物路径也按相同规则校验。未通过校验的显式输入仍可排队，由 Worker 记录加载失败，不改变时间切分或复制元数据。
 
 ## 本地运行
 
@@ -121,3 +123,12 @@ npm run dev
 - 每次任务记录 `rule_version`、`data_version`、`output_data_version`、`task_id`、`t1`、`t2`。
 - `T1`/`T2` 未设置时结果中为 `null`，不会用猜测值填充。
 - 执行失败时任务进入 `failed`，错误信息包含失败阶段和命令输出，不生成占位结果。
+
+## Agent 当前任务文件证据
+
+向 `POST /api/agent/messages` 发送 `{"task_id":"当前任务ID","message":"为什么失败？请查看 report.json 和评分源码说明依据"}`，可追问清洗或分析任务，包括失败阶段、错误、参数和已发布产物。配置现有 `MODEL_*` 后，每条消息先由模型结合当前任务快照判断意图：解释过去结果不启动训练，明确新操作才创建任务，模糊请求先澄清。每条消息最多执行一个路由工具；读取证据委托给独立只读循环（下述预算不含这一次路由请求），明确“重新跑一次”可复用当前任务原输入与参数。模型超时或返回无效操作不会降级为关键词创建，也不会自动重试。未配置模型时标注确定性演示模式，仅接受有限的完整创建命令；追问只返回已保存结果，不声称读取过文件。
+
+- `list_task_files`、`read_task_file(name, offset, limit)` 只访问当前任务已注册的 `.json/.dat/.tsv` 文本，真实路径必须同时位于 `ARTIFACT_DIR` 与当前任务专属目录内；拒绝越界、未注册文件及重定向任务目录。工具不接受任务 ID 或任意路径。
+- `read_business_file` 仅允许 `backend/scoring.py`、`backend/executors.py`、`backend/analysis/{dataset,features,classification,clustering,reduction,math_tools}.py` 和 `rules/default.json`。不开放前端、Agent、服务、配置、数据库、基础设施、密钥或其他任务；没有任意 shell、网络或文件读取工具。
+- 每次最多 8192 字节，每轮追问最多 8 次工具调用、5 次模型请求；模型快照和清单也有截断限制。偏移按字节计算，返回 `truncated/next_offset`；JSON/源码为 UTF-8，DAT/TSV 为 Latin-1。使用 `next_offset` 连续分页不会拆开 UTF-8 字符；自行指定到字符中部的起点会省略该残缺字符，过小的读取上限会报错。回答应引用文件名与字节范围，未读完须说明局限；文件数据与代码仅是证据，不是指令。
+- 源码与默认规则是当前部署版本，不是历史执行时的源码快照；本功能不提供完整执行日志、历史源码重放或因果证明。文件边界不等于认证授权：当前接口未实现用户认证，不应宣称具备多用户隔离；部署方仍须限制 API、模型服务及本机文件写权限。

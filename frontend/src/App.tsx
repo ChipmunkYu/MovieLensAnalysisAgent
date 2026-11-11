@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
+import { questionPreview, questionTurns, readingTurn, upsertAnalysis, type ChatEntry } from './history'
 import type { AnalysisEnvelope, Artifact, DimensionScore, DispositionItem, Rule, RuleSet, Task, TaskResult } from './types'
 
 const DEFAULT_PROMPT = '请使用默认规则清洗 MovieLens 1M，评估清洗前后的五个数据质量维度，并说明处理了哪些问题。'
@@ -11,7 +12,6 @@ const DIMENSIONS: Record<string, [string, string]> = {
 }
 type IconName = 'send' | 'file' | 'folder' | 'chart' | 'chevron' | 'panel' | 'close' | 'spark' | 'alert' | 'report' | 'rule'
 type Selection = { type: 'scores' } | { type: 'report' } | { type: 'method' } | { type: 'rule'; rule: Rule }
-type ChatEntry = { role: 'user' | 'assistant'; content: string; tone?: 'normal' | 'error' }
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -91,58 +91,128 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>()
   const [reportedTaskId, setReportedTaskId] = useState('')
   const streamEnd = useRef<HTMLDivElement>(null)
+  const followStream = useRef(true)
+  const readingFromNav = useRef(false)
+  const conversation = useRef<HTMLElement>(null)
+  const stream = useRef<HTMLDivElement>(null)
+  const turnElements = useRef(new Map<number, HTMLElement>())
+  const turnNav = useRef<HTMLElement>(null)
+  const turnList = useRef<HTMLDivElement>(null)
+  const [activeTurn, setActiveTurn] = useState<number>()
+  const [turnPreview, setTurnPreview] = useState<{ content: string; top: number }>()
+  const turns = useMemo(() => questionTurns(history), [history])
   const taskId = task ? taskIdOf(task) : undefined
   const activeTaskId = analysis?.id ?? taskId
   const scores = useMemo(() => scoresOf(result), [result])
   const dispositions = useMemo(() => dispositionsOf(result), [result])
   const running = submitting || !!task && !TERMINAL.has(task.status) || !!analysis && !TERMINAL.has(analysis.status)
-  const failed = task?.status === 'failed'
+  const failed = task?.status === 'failed' || analysis?.status === 'failed'
   const progress = Math.max(0, Math.min(100, task?.progress == null ? (task?.status === 'succeeded' ? 100 : 0) : task.progress <= 1 ? task.progress * 100 : task.progress))
   const pendingCopy = taskId && task && TERMINAL.has(task.status) ? '正在思考…' : '正在解析并创建任务…'
 
   useEffect(() => { api.getDefaultRules().then(setRules).catch(() => {}) }, [])
-  useEffect(() => { streamEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [history, task?.status, result, error])
+  useEffect(() => {
+    if (followStream.current) streamEnd.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' })
+  }, [history.length, submitting, task?.status, analysis?.status, result, error])
+  useEffect(() => {
+    const container = conversation.current
+    if (!container) return
+    let frame = 0
+    function updateReadingTurn() {
+      frame = 0
+      if (!container) return
+      const bottomGap = container.scrollHeight - container.scrollTop - container.clientHeight
+      followStream.current = !readingFromNav.current && bottomGap < 240
+      const entries = [...turnElements.current.entries()].sort(([left], [right]) => left - right)
+      const readingLine = container.getBoundingClientRect().top + Math.min(100, container.clientHeight * .2)
+      const position = readingTurn(entries.map(([, element]) => element.getBoundingClientRect().top), readingLine, bottomGap <= 4)
+      setActiveTurn(entries[position]?.[0])
+    }
+    function schedule() { if (!frame) frame = window.requestAnimationFrame(updateReadingTurn) }
+    function resumeFollowing() { readingFromNav.current = false; schedule() }
+    container.addEventListener('scroll', schedule, { passive: true })
+    container.addEventListener('wheel', resumeFollowing, { passive: true })
+    container.addEventListener('touchstart', resumeFollowing, { passive: true })
+    container.addEventListener('keydown', resumeFollowing)
+    const observer = new ResizeObserver(schedule)
+    observer.observe(container)
+    if (stream.current) observer.observe(stream.current)
+    schedule()
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+      container.removeEventListener('scroll', schedule)
+      container.removeEventListener('wheel', resumeFollowing)
+      container.removeEventListener('touchstart', resumeFollowing)
+      container.removeEventListener('keydown', resumeFollowing)
+    }
+  }, [history.length])
+  useEffect(() => {
+    const list = turnList.current
+    const active = list?.querySelector<HTMLElement>('[aria-current="location"]')
+    if (!list || !active) return
+    function keepVisible() {
+      if (!list || !active) return
+      if (active.offsetTop < list.scrollTop) list.scrollTop = active.offsetTop
+      else if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight
+    }
+    keepVisible()
+    const observer = new ResizeObserver(keepVisible)
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [activeTurn])
   useEffect(() => {
     function closeOnEscape(event: globalThis.KeyboardEvent) { if (event.key === 'Escape') setPanelOpen(false) }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [])
   useEffect(() => {
-    if (!taskId || !task || TERMINAL.has(task.status)) return
+    if (submitting || !taskId || !task || TERMINAL.has(task.status)) return
+    let live = true
+    let polling = false
     const timer = window.setInterval(async () => {
+      if (polling) return
+      polling = true
       try {
         const next = await api.getTask(taskId)
-        setTask(next)
+        if (!live) return
         if (next.status === 'succeeded') {
           const [nextResult, nextArtifacts] = await Promise.all([api.getResult(taskId), api.getArtifacts(taskId)])
+          if (!live) return
           setResult(nextResult); setArtifacts(nextArtifacts); window.clearInterval(timer)
-        } else if (next.status === 'failed') window.clearInterval(timer)
+        } else if (TERMINAL.has(next.status)) window.clearInterval(timer)
+        setTask(next)
       } catch (cause) {
+        if (!live) return
         setError(cause instanceof Error ? cause.message : '无法获取任务状态'); window.clearInterval(timer)
-      }
+      } finally { polling = false }
     }, 2000)
-    return () => window.clearInterval(timer)
-  }, [taskId, task?.status])
+    return () => { live = false; window.clearInterval(timer) }
+  }, [taskId, task?.status, submitting])
   useEffect(() => {
-    if (!analysis || TERMINAL.has(analysis.status)) return
+    if (submitting || !analysis || TERMINAL.has(analysis.status)) return
+    let live = true
+    let polling = false
     const timer = window.setInterval(async () => {
+      if (polling) return
+      polling = true
       try {
         const next = await api.getAnalysis(analysis.id)
+        if (!live) return
         setAnalysis(next)
-        if (next.status === 'failed') {
-          setError(next.error ?? '分析任务执行失败')
-          window.clearInterval(timer)
-        } else if (next.status === 'succeeded') {
+        setHistory(current => upsertAnalysis(current, next))
+        if (TERMINAL.has(next.status)) {
           setArtifacts(next.artifacts ?? [])
           window.clearInterval(timer)
         }
       } catch (cause) {
+        if (!live) return
         setError(cause instanceof Error ? cause.message : '无法获取分析任务状态')
         window.clearInterval(timer)
-      }
+      } finally { polling = false }
     }, 1500)
-    return () => window.clearInterval(timer)
-  }, [analysis?.id, analysis?.status])
+    return () => { live = false; window.clearInterval(timer) }
+  }, [analysis?.id, analysis?.status, submitting])
   useEffect(() => {
     if (!taskId || task?.status !== 'succeeded' || !result || reportedTaskId === taskId) return
     setHistory(current => [...current, { role: 'assistant', content: resultSummary(result, dispositions, scores) }])
@@ -155,6 +225,8 @@ export default function App() {
     if (!message || running) return
     const currentTaskId = activeTaskId
     const keepCurrentTask = !!currentTaskId
+    followStream.current = true
+    readingFromNav.current = false
     setSubmitting(true); setError(''); setSelection(undefined); setHistory(current => [...current, { role: 'user', content: message }]); setPrompt('')
     if (!keepCurrentTask) {
       setTask(undefined); setResult(undefined); setAnalysis(undefined); setArtifacts([])
@@ -162,8 +234,11 @@ export default function App() {
     }
     try {
       const agent = await api.sendMessage(message, currentTaskId)
-      setHistory(current => [...current, { role: 'assistant', content: agent.reply }])
       const analysisData = agent.data as AnalysisEnvelope | null
+      setHistory(current => {
+        const next: ChatEntry[] = [...current, { role: 'assistant', content: agent.reply }]
+        return analysisData?.task_type ? upsertAnalysis(next, analysisData) : next
+      })
       if (analysisData?.task_type) {
         setAnalysis(analysisData); setTask(undefined); setResult(undefined); setArtifacts(analysisData.artifacts ?? [])
         setSubmitting(false)
@@ -172,7 +247,7 @@ export default function App() {
       const id = taskIdOf(agent)
       if (!id) return
       const nextTask = await api.getTask(id)
-      setTask(nextTask)
+      setAnalysis(undefined); setTask(nextTask)
       if (id !== currentTaskId && !TERMINAL.has(nextTask.status)) {
         setResult(undefined); setArtifacts([])
       }
@@ -194,6 +269,23 @@ export default function App() {
     setExpanded(current => { const next = new Set(current); next.has(node) ? next.delete(node) : next.add(node); return next })
   }
   function select(next: Selection) { setSelection(next); setPanelOpen(true) }
+  function previewTurn(button: HTMLButtonElement, content: string) {
+    const nav = turnNav.current
+    if (nav) setTurnPreview({ content, top: Math.max(16, Math.min(nav.clientHeight - 16, button.getBoundingClientRect().top + button.offsetHeight / 2 - nav.getBoundingClientRect().top)) })
+  }
+  function previewFocusedTurn() {
+    const button = turnNav.current?.querySelector<HTMLButtonElement>('button:focus')
+    if (button) previewTurn(button, button.getAttribute('aria-label') ?? '')
+    else setTurnPreview(undefined)
+  }
+  function jumpToTurn(index: number) {
+    const container = conversation.current
+    const target = turnElements.current.get(index)
+    if (!container || !target) return
+    readingFromNav.current = true
+    followStream.current = false
+    container.scrollTo({ top: container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 24, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  }
   const hasReportResources = !!result && (!!result.explanation || dispositions.length > 0 || !!rules?.rules?.length)
 
   return <div className={`workspace ${panelOpen ? 'panel-open' : 'panel-closed'}`}>
@@ -203,15 +295,19 @@ export default function App() {
       <button className="icon-button panel-button" type="button" onClick={() => setPanelOpen(value => !value)} aria-expanded={panelOpen} aria-controls="resource-panel" aria-label={panelOpen ? '收起资源面板' : '展开资源面板'}><Icon name="panel" /></button>
     </header>
 
-    <main className="conversation" aria-label="任务对话工作区">
-      <div className="chat-stream">
+    <main ref={conversation} className="conversation" aria-label="任务对话工作区">
+      <div ref={stream} className="chat-stream">
         <section className="welcome assistant-message">
           <div className="avatar"><Icon name="spark" /></div>
           <div className="message-body"><p className="message-label">治理助手</p><h1>从一句清晰的要求开始。</h1><p>我会执行 MovieLens 数据清洗，跟踪任务进度，并将图表、规则与结果文件整理到右侧资源面板。</p></div>
         </section>
 
-        {history.map((entry, index) => entry.role === 'user'
-          ? <section key={`user-${index}`} className="user-message" aria-label="你的请求"><div className="user-copy">{entry.content}</div></section>
+        {history.map((entry, index) => entry.role === 'analysis'
+          ? entry.analysis.result
+            ? <AnalysisCards key={`analysis-${entry.id}`} analysis={entry.analysis} />
+            : <AnalysisProgress key={`analysis-${entry.id}`} analysis={entry.analysis} />
+          : entry.role === 'user'
+          ? <section key={`user-${index}`} id={`turn-${index}`} ref={element => { if (element) turnElements.current.set(index, element); else turnElements.current.delete(index) }} className="user-message" aria-label="你的请求"><div className="user-copy">{entry.content}</div></section>
           : <section key={`assistant-${index}`} className={`assistant-message ${entry.tone === 'error' ? 'task-message' : ''}`}>
               <div className="avatar"><Icon name={entry.tone === 'error' ? 'alert' : 'spark'} /></div>
               <div className="message-body">
@@ -229,7 +325,7 @@ export default function App() {
           </div>
         </section>}
 
-        {((task && !TERMINAL.has(task.status)) || error || failed) && <section className="assistant-message task-message" aria-live="polite">
+        {((task && !TERMINAL.has(task.status)) || error || task?.status === 'failed') && <section className="assistant-message task-message" aria-live="polite">
           <div className="avatar"><Icon name={error || failed ? 'alert' : 'spark'} /></div>
           <div className="message-body">
             <p className="message-label">治理助手</p>
@@ -239,7 +335,6 @@ export default function App() {
             </>}
           </div>
         </section>}
-        {analysis && (analysis.result ? <AnalysisCards analysis={analysis} /> : <AnalysisProgress analysis={analysis} />)}
         <div ref={streamEnd} />
       </div>
 
@@ -252,6 +347,15 @@ export default function App() {
         </form>
       </div>
     </main>
+
+    {turns.length > 0 && <nav ref={turnNav} className="turn-nav" aria-label="对话问题导航" onMouseLeave={previewFocusedTurn} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setTurnPreview(undefined) }} onKeyDown={event => { if (event.key === 'Escape') setTurnPreview(undefined) }}>
+      <div ref={turnList} className="turn-list" onScroll={previewFocusedTurn}>
+        {turns.map(turn => <button key={turn.index} type="button" className="turn-marker" aria-label={turn.content} aria-controls={`turn-${turn.index}`} aria-current={activeTurn === turn.index ? 'location' : undefined}
+          onMouseEnter={event => previewTurn(event.currentTarget, turn.content)} onFocus={event => previewTurn(event.currentTarget, turn.content)}
+          onClick={event => { previewTurn(event.currentTarget, turn.content); jumpToTurn(turn.index) }}><span aria-hidden="true" /></button>)}
+      </div>
+      {turnPreview && <div className="turn-preview" aria-hidden="true" style={{ top: turnPreview.top }}>{questionPreview(turnPreview.content)}</div>}
+    </nav>}
 
     {panelOpen && <button className="drawer-backdrop" type="button" onClick={() => setPanelOpen(false)} aria-label="关闭资源面板" />}
     {panelOpen && <aside className="resource-panel" id="resource-panel" aria-label="任务资源面板">
@@ -281,8 +385,8 @@ function metric(value: unknown) { return typeof value === 'number' ? value.toFix
 function AnalysisProgress({ analysis }: { analysis: AnalysisEnvelope }) {
   const progress = Math.max(0, Math.min(100, analysis.progress ?? (analysis.status === 'succeeded' ? 100 : 0)))
   return <section className="analysis-suite analysis-progress" aria-live="polite">
-    <header className="analysis-status"><div><span>ITERATION 02 · ANALYSIS</span><h2>正在执行{analysis.task_type === 'classification' ? '评分分类' : analysis.task_type === 'clustering' ? '用户聚类' : '画像降维'}</h2></div><div className="analysis-badges"><b>{statusText(analysis.status)}</b><span>{analysis.input_data_version}</span></div></header>
-    <p className="stage-copy">{analysis.stage ?? '等待分析 Worker 调度'} · {Math.round(progress)}%</p>
+    <header className="analysis-status"><div><span>ITERATION 02 · ANALYSIS</span><h2>{!TERMINAL.has(analysis.status) && '正在执行'}{analysis.task_type === 'classification' ? '评分分类' : analysis.task_type === 'clustering' ? '用户聚类' : '画像降维'}{TERMINAL.has(analysis.status) && ` · ${statusText(analysis.status)}`}</h2></div><div className="analysis-badges"><b>{statusText(analysis.status)}</b><span>{analysis.input_data_version}</span></div></header>
+    {analysis.status === 'failed' ? <div className="error-message"><strong>分析任务执行失败</strong><p>{analysis.error || '任务未生成可用结果，请检查服务后重试。'}</p></div> : <p className="stage-copy">{analysis.stage ?? '等待分析 Worker 调度'} · {Math.round(progress)}%</p>}
     <div className="progress-track" aria-label={`分析进度 ${Math.round(progress)}%`}><span style={{ width: `${progress}%` }} /></div>
   </section>
 }

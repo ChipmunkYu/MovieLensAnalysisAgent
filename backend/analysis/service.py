@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from backend.analysis import classification, clustering, reduction
 from backend.analysis.dataset import load_dataset
 from backend.analysis.features import build_profiles
+from backend.analysis.inputs import resolve_analysis_source
 from backend.config import artifact_dir, data_version
 from backend.models import AnalysisTask, TaskStatus, now
 
@@ -23,7 +24,11 @@ def _write_json(path: Path, value: object) -> dict:
 def create_analysis_task(session: Session, task_type: str, input_path: str, parameters: dict) -> AnalysisTask:
     if task_type not in RUNNERS:
         raise ValueError(f"不支持的分析任务类型：{task_type}")
-    source_version = f"{data_version()}-clean" if "clean" in Path(input_path).name.lower() else data_version()
+    try:
+        source_version = resolve_analysis_source(input_path, session=session).version
+    except (OSError, ValueError, RuntimeError):
+        # Invalid inputs still queue; the worker records the loading-stage failure.
+        source_version = data_version()
     task = AnalysisTask(task_type=task_type, input_path=input_path, input_data_version=source_version, parameters=parameters)
     session.add(task)
     session.commit()
@@ -34,7 +39,8 @@ def create_analysis_task(session: Session, task_type: str, input_path: str, para
 def execute_analysis(session: Session, task: AnalysisTask) -> AnalysisTask:
     try:
         task.status, task.stage, task.started_at = TaskStatus.RUNNING, "loading_data", now(); session.commit()
-        dataset = load_dataset(task.input_path)
+        dataset = load_dataset(task.input_path, session=session)
+        task.input_data_version = dataset.input_data_version
         task.stage = "building_features"; session.commit()
         parameters = task.parameters or {}
         if task.task_type == "classification":

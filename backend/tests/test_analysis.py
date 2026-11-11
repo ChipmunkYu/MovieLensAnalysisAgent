@@ -25,6 +25,8 @@ def analysis_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATA_DIR", str(data)); monkeypatch.setenv("DEFAULT_INPUT_PATH", "ratings.dat")
     monkeypatch.setenv("ARTIFACT_DIR", str(tmp_path / "artifacts"))
     monkeypatch.delenv("T1", raising=False); monkeypatch.delenv("T2", raising=False)
+    for name in ("MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_NAME"):
+        monkeypatch.delenv(name, raising=False)
     engine = make_engine(f"sqlite:///{tmp_path / 'analysis.db'}"); Base.metadata.create_all(engine)
     Session = sessionmaker(engine, expire_on_commit=False)
     def test_db():

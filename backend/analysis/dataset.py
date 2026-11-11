@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from sqlalchemy.orm import Session
 
 from backend.config import time_boundary
-from backend.executors import resolve_input
+from backend.analysis.inputs import metadata_file, resolve_analysis_source
 
 
 @dataclass
@@ -21,6 +22,7 @@ class Dataset:
     t1: int
     t2: int
     boundary_source: str
+    input_data_version: str | None = None
 
     @property
     def train(self) -> np.ndarray:
@@ -49,7 +51,7 @@ def _timestamp(value: str | None) -> int | None:
 
 
 def _load_genres(source: Path) -> tuple[dict[int, list[str]], list[str]]:
-    path = source.with_name("movies.dat")
+    path = metadata_file(source, "movies.dat")
     if not path.is_file():
         return {}, []
     values: dict[int, list[str]] = {}
@@ -70,7 +72,7 @@ def _load_genres(source: Path) -> tuple[dict[int, list[str]], list[str]]:
 
 
 def _load_ages(source: Path) -> tuple[dict[int, int], list[int]]:
-    path = source.with_name("users.dat")
+    path = metadata_file(source, "users.dat")
     if not path.is_file():
         return {}, []
     values: dict[int, int] = {}
@@ -89,8 +91,9 @@ def _load_ages(source: Path) -> tuple[dict[int, int], list[int]]:
     return values, sorted(buckets)
 
 
-def load_dataset(input_path: str) -> Dataset:
-    source = resolve_input(input_path)
+def load_dataset(input_path: str, *, session: Session | None = None) -> Dataset:
+    provenance = resolve_analysis_source(input_path, session=session)
+    source = provenance.ratings
     rows: dict[tuple[int, int], tuple[int, int, float, int]] = {}
     with source.open(encoding="iso-8859-1") as stream:
         for line in stream:
@@ -122,9 +125,10 @@ def load_dataset(input_path: str) -> Dataset:
             if len(ordered) < 3:
                 raise ValueError("评分时间点不足 3 个，无法按时间切分数据")
             t1, t2 = int(ordered[len(ordered) // 3]), int(ordered[2 * len(ordered) // 3])
-    genres, names = _load_genres(source)
-    ages, age_buckets = _load_ages(source)
-    dataset = Dataset(source, ratings, genres, names, ages, age_buckets, t1, t2, boundary_source)
+    genres, names = _load_genres(provenance.metadata)
+    ages, age_buckets = _load_ages(provenance.metadata)
+    dataset = Dataset(source, ratings, genres, names, ages, age_buckets, t1, t2, boundary_source,
+                      input_data_version=provenance.version)
     if min(len(dataset.train), len(dataset.validation), len(dataset.test)) == 0:
         raise ValueError("T1/T2 产生了空数据集，请调整时间边界")
     return dataset

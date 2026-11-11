@@ -82,9 +82,20 @@ def event_features(dataset: Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray
 def prediction_features(dataset: Dataset, user_id: int, movie_id: int) -> np.ndarray:
     train = dataset.train
     uh, mh = train[train[:, 0] == user_id, 2], train[train[:, 1] == movie_id, 2]
-    if not len(uh): raise ValueError(f"用户 {user_id} 在训练期不存在，无法进行预测")
-    if not len(mh): raise ValueError(f"电影 {movie_id} 在训练期不存在，无法进行预测")
-    lam, mu_global = SMOOTHING_LAMBDA, _global_mean(dataset)
+    if not len(uh) or not len(mh):
+        missing, suggestions = [], []
+        if not len(uh):
+            missing.append(f"用户 {user_id}")
+            suggestions.append(f"训练期用户 ID 示例：{sorted(set(map(int, train[:, 0])))[:5]}" if len(train) else "训练期无可用用户示例")
+        else:
+            suggestions.append(f"可保留用户 {user_id}")
+        if not len(mh):
+            missing.append(f"电影 {movie_id}")
+            suggestions.append(f"训练期电影 ID 示例：{sorted(set(map(int, train[:, 1])))[:5]}" if len(train) else "训练期无可用电影示例")
+        else:
+            suggestions.append(f"可保留电影 {movie_id}")
+        raise ValueError(f"{'、'.join(missing)} 在训练期（TRAIN）不存在；不支持冷启动预测，尚未开始模型训练。" + "；".join(suggestions) + "。")
+    lam, mu_global = SMOOTHING_LAMBDA, float(train[:, 2].mean())
     u_smooth = (uh.sum() + lam * mu_global) / (len(uh) + lam)
     m_smooth = (mh.sum() + lam * mu_global) / (len(mh) + lam)
     row = [u_smooth, len(uh), m_smooth, len(mh)]

@@ -80,6 +80,7 @@ class DecisionTreeModel:
 def run(dataset: Dataset, user_id: int | None, movie_id: int | None, algorithm: str | None) -> dict:
     if user_id is None or movie_id is None:
         raise ValueError("分类任务必须同时提供 user_id 和 movie_id")
+    prediction_x = prediction_features(dataset, user_id, movie_id)
     x, y, identities = event_features(dataset)
     if len(x) < 4:
         raise ValueError("可用于无泄漏分类建模的历史评分不足 4 条")
@@ -90,7 +91,6 @@ def run(dataset: Dataset, user_id: int | None, movie_id: int | None, algorithm: 
     aliases = {"logistic": "logistic_regression", "lr": "logistic_regression", "dt": "decision_tree", "tree": "decision_tree", "决策树": "decision_tree"}
     requested = aliases.get(requested, requested)
     names = [requested] if requested in ("logistic_regression", "decision_tree") else ["logistic_regression", "decision_tree"]
-    prediction_x = prediction_features(dataset, user_id, movie_id)
     results = []
     for name in names:
         model = LogisticModel().fit(x[train_mask], y[train_mask]) if name == "logistic_regression" else DecisionTreeModel().fit(x[train_mask], y[train_mask])
